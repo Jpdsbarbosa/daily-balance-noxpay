@@ -238,26 +238,28 @@ def consultar_saldos():
 ############# AGENDADOR ######################################
 
 def main():
-    # Primeiro verifica se o trigger está ativo
+    print(f"Verificando trigger em: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    
+    # Verifica o trigger primeiro
     if not check_trigger():
-        print("Trigger não está ativo. Encerrando execução.")
-        sys.exit(0)  # Sai sem erro
-        
+        print("Trigger não está ativo (B1 = FALSE). Aguardando próxima verificação.")
+        sys.exit(0)
+    
+    print("Trigger ativo! Iniciando processo de atualização...")
+    
     if not connect_ssh():
         print("AVISO: Não foi possível estabelecer conexão SSH.")
         sys.exit(1)
 
     try:
-        print("Iniciando atualização...")
         update_status("Atualizando...")
-        
         consultar_saldos()
         
         last_update = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
         update_status(f"Última atualização: {last_update}")
         
         reset_trigger()
-        print("Atualização concluída.")
+        print("Atualização concluída com sucesso!")
         
     except Exception as e:
         print(f"Erro inesperado: {e}")
