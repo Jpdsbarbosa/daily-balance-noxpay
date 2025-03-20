@@ -238,6 +238,11 @@ def consultar_saldos():
 ############# AGENDADOR ######################################
 
 def main():
+    # Primeiro verifica se o trigger está ativo
+    if not check_trigger():
+        print("Trigger não está ativo. Encerrando execução.")
+        sys.exit(0)  # Sai sem erro
+        
     if not connect_ssh():
         print("AVISO: Não foi possível estabelecer conexão SSH.")
         sys.exit(1)
