@@ -1,0 +1,16 @@
+# Arquivos de configuração
+configs_github.txt
+controles.json
+
+# Arquivos Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.env
+
+# Logs
+*.log 
