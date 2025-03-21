@@ -71,42 +71,64 @@ def execute_curl(ssh_client, url, max_retries=5):
     print(f"Todas as {max_retries} tentativas falharam para a URL: {url}")
     return None
 
-def get_account_balance(ssh_client, token, account_id):
-    try:
-        max_retries = 3
-        for attempt in range(max_retries):
-            # Primeiro pega o total de transações
-            response = execute_curl(ssh_client, f"{url_financial}?api_token={token}")
-            
-            if response and "transactions_total" in response:
-                total_transactions = response["transactions_total"]
-                
-                # Pega apenas as últimas transações
-                start = max(0, total_transactions - 50)
-                response = execute_curl(ssh_client, f"{url_financial}?api_token={token}&start={start}")
-                
-                if response and response.get("transactions"):
-                    last_transaction = response["transactions"][-1]
-                    saldo_cents = float(last_transaction["balance_cents"]) / 100
-                    return {
-                        "Account": account_id,
-                        "transactions_total": total_transactions,
-                        "saldo_cents": saldo_cents
-                    }
-            
-            if attempt < max_retries - 1:
-                print(f"Tentativa {attempt + 1} falhou, aguardando 30 segundos...")
-                sleep(30)
-                
-    except Exception as e:
-        print(f"Erro ao processar conta {account_id}: {e}")
+def get_account_balance(ssh_client, token, account):
+    if not token or token.strip() == "":
+        print(f"Token vazio para conta {account}, pulando...")
+        return None
+
+    max_retries = 5  # Número máximo de tentativas
+    retry_delay = 10  # Tempo entre tentativas (segundos)
     
-    print(f"Não foi possível obter saldo para a conta {account_id}")
-    return {
-        "Account": account_id,
-        "transactions_total": 0,
-        "saldo_cents": 0
-    }
+    for attempt in range(max_retries):
+        try:
+            if attempt > 0:
+                print(f"Tentativa {attempt + 1}/{max_retries} para conta {account}")
+                sleep(retry_delay)  # Espera entre tentativas
+            
+            # Consulta saldo
+            print(f"Consultando saldo da conta {account}...")
+            command = f'curl -H "Authorization: Basic {token}" https://api.iugu.com/v1/balance'
+            stdin, stdout, stderr = ssh_client.exec_command(command)
+            response = stdout.read().decode()
+            
+            if "504 Gateway Time-out" in response:
+                print(f"Timeout na consulta de saldo, tentativa {attempt + 1}")
+                continue  # Tenta novamente
+                
+            data = json.loads(response)
+            
+            if 'total_cents' not in data:
+                print(f"Resposta inválida para saldo: {response}")
+                continue  # Tenta novamente
+            
+            # Se chegou aqui, conseguiu o saldo. Agora busca transações
+            sleep(2)  # Pequena pausa entre as chamadas
+            
+            command_trans = f'curl -H "Authorization: Basic {token}" "https://api.iugu.com/v1/financial_transaction_requests?limit=1"'
+            stdin, stdout, stderr = ssh_client.exec_command(command_trans)
+            trans_response = stdout.read().decode()
+            
+            if "504 Gateway Time-out" in trans_response:
+                print("Timeout ao buscar transações, considerando 0")
+                total_items = 0
+            else:
+                trans_data = json.loads(trans_response)
+                total_items = trans_data.get('total_items', 0)
+            
+            # Se chegou até aqui, deu tudo certo
+            return {
+                "Account": account,
+                "saldo_cents": data['total_cents'] / 100.0,
+                "transactions_total": total_items
+            }
+            
+        except Exception as e:
+            print(f"Erro na tentativa {attempt + 1}: {str(e)}")
+            if attempt == max_retries - 1:  # Última tentativa
+                print(f"Todas as tentativas falharam para conta {account}")
+                return None
+    
+    return None  # Retorna None se todas as tentativas falharem
 
 def check_trigger(wks_IUGU_subacc):
     """Verifica se a célula B1 contém TRUE para executar o script."""
@@ -139,10 +161,9 @@ def check_all_accounts():
         sh_gateway = gc.open("Gateway")
         wks_subcontas = sh_gateway.worksheet_by_title("Subcontas")
         sh_balance = gc.open("Daily Balance - Nox Pay")
-        wks_IUGU_subacc = sh_balance.worksheet_by_title("IUGU Subcontas")
+        wks_IUGU_subacc = sh_balance.worksheet_by_title("IUGU Subcontas TESTE")
 
         # Verifica o trigger
-        print("Verificando trigger...")
         if not check_trigger(wks_IUGU_subacc):
             print("Trigger não está ativo (B1 = FALSE). Encerrando execução.")
             return
@@ -150,11 +171,15 @@ def check_all_accounts():
         print("Trigger ativo! Iniciando atualização...")
         update_status(wks_IUGU_subacc, "Atualizando...")
 
-        # Lê as subcontas do Google Sheets
+        # Lê as subcontas do Google Sheets (origem e destino)
         df_subcontas = pd.DataFrame(wks_subcontas.get_all_records())
-        
-        # Filtra apenas subcontas ativas
         df_subcontas_ativas = df_subcontas[df_subcontas["NOX"] == "SIM"]
+        
+        # Lê as contas existentes na planilha de destino
+        contas_destino = pd.DataFrame(wks_IUGU_subacc.get_all_records())
+        contas_existentes = set()
+        if not contas_destino.empty and 'Account' in contas_destino.columns:
+            contas_existentes = set(contas_destino['Account'].astype(str))
 
         # Conecta ao SSH
         ssh_client = connect_ssh()
@@ -168,10 +193,16 @@ def check_all_accounts():
 
         for idx, row in df_subcontas_ativas.iterrows():
             token = row["live_token_full"]
-            account = row["account"]
+            account = str(row["account"])
             
             print(f"\nProcessando conta {idx + 1}/{total_contas}")
             print(f"Account: {account}")
+            
+            # Indica se é uma conta nova ou existente
+            if account in contas_existentes:
+                print(f"Conta {account} encontrada na planilha de destino, atualizando...")
+            else:
+                print(f"Nova conta ativa detectada: {account}, adicionando...")
             
             resultado = get_account_balance(ssh_client, token, account)
             
@@ -180,10 +211,26 @@ def check_all_accounts():
                 print(f"Resultado:")
                 print(f"- Saldo: R$ {resultado['saldo_cents']:,.2f}")
                 print(f"- Total transações: {resultado['transactions_total']}")
+            else:
+                print(f"Não foi possível obter dados para a conta {account}")
             
-            # Pequena pausa entre as requisições
-            sleep(2)
-        
+            # Pausa entre contas
+            sleep(5)
+
+        # Estatísticas finais
+        contas_processadas = set(r['Account'] for r in resultados)
+        contas_novas = contas_processadas - contas_existentes
+        contas_atualizadas = contas_processadas & contas_existentes
+
+        print("\n=== Estatísticas de Processamento ===")
+        print(f"Total de contas processadas: {len(resultados)}")
+        print(f"Contas novas adicionadas: {len(contas_novas)}")
+        print(f"Contas existentes atualizadas: {len(contas_atualizadas)}")
+        if contas_novas:
+            print("\nNovas contas adicionadas:")
+            for conta in contas_novas:
+                print(f"- {conta}")
+
         # Cria DataFrame com resultados
         df_resultados = pd.DataFrame(resultados)
         
@@ -202,9 +249,7 @@ def check_all_accounts():
             copy_head=True
         )
         
-        print("\nProcessamento concluído!")
-        print(f"Total de contas processadas: {len(resultados)}")
-        print(f"Execução concluída: {rodado}")
+        print(f"\nExecução concluída: {rodado}")
         
         # Reset do trigger
         reset_trigger(wks_IUGU_subacc)
