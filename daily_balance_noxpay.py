@@ -29,7 +29,7 @@ def connect_ssh():
     print("Conexão SSH estabelecida com sucesso.")
     return ssh_client
 
-def execute_curl(ssh_client, url, max_retries=3):
+def execute_curl(ssh_client, url, max_retries=5):
     for attempt in range(max_retries):
         try:
             if "?" in url:
@@ -46,58 +46,67 @@ def execute_curl(ssh_client, url, max_retries=3):
             
             if error:
                 print(f"Erro no curl: {error}")
+                sleep(10)
                 continue
                 
             if "error code: 504" in response:
                 print("Erro 504 detectado, aguardando antes de tentar novamente...")
-                sleep(5)
+                sleep(15)
                 continue
                 
             try:
                 return json.loads(response)
             except json.JSONDecodeError:
                 print(f"Erro ao decodificar JSON. Resposta: {response[:200]}...")
-                sleep(5)
+                sleep(10)
                 continue
                 
         except Exception as e:
             print(f"Erro na tentativa {attempt + 1}: {e}")
-            sleep(5)
+            sleep(10)
             
         if attempt < max_retries - 1:
-            print("Tentando novamente...")
+            print("Tentando novamente após erro...")
             
+    print(f"Todas as {max_retries} tentativas falharam para a URL: {url}")
     return None
 
 def get_account_balance(ssh_client, token, account_id):
     try:
-        # Primeiro pega o total de transações
-        response = execute_curl(ssh_client, f"{url_financial}?api_token={token}")
-        
-        if response and "transactions_total" in response:
-            total_transactions = response["transactions_total"]
+        max_retries = 3
+        for attempt in range(max_retries):
+            # Primeiro pega o total de transações
+            response = execute_curl(ssh_client, f"{url_financial}?api_token={token}")
             
-            # Pega apenas as últimas transações
-            start = max(0, total_transactions - 50)
-            response = execute_curl(ssh_client, f"{url_financial}?api_token={token}&start={start}")
+            if response and "transactions_total" in response:
+                total_transactions = response["transactions_total"]
+                
+                # Pega apenas as últimas transações
+                start = max(0, total_transactions - 50)
+                response = execute_curl(ssh_client, f"{url_financial}?api_token={token}&start={start}")
+                
+                if response and response.get("transactions"):
+                    last_transaction = response["transactions"][-1]
+                    saldo_cents = float(last_transaction["balance_cents"]) / 100
+                    return {
+                        "Account": account_id,
+                        "transactions_total": total_transactions,
+                        "saldo_cents": saldo_cents
+                    }
             
-            if response and response.get("transactions"):
-                last_transaction = response["transactions"][-1]
-                saldo_cents = float(last_transaction["balance_cents"]) / 100
-                return {
-                    "Account": account_id,
-                    "transactions_total": total_transactions,
-                    "saldo_cents": saldo_cents
-                }
+            if attempt < max_retries - 1:
+                print(f"Tentativa {attempt + 1} falhou, aguardando 30 segundos...")
+                sleep(30)
+                
     except Exception as e:
         print(f"Erro ao processar conta {account_id}: {e}")
-        return {
-            "Account": account_id,
-            "transactions_total": 0,
-            "saldo_cents": 0
-        }
     
-    return None
+    print(f"Não foi possível obter saldo para a conta {account_id}")
+    return {
+        "Account": account_id,
+        "transactions_total": 0,
+        "saldo_cents": 0
+    }
 
 def check_trigger(wks_IUGU_subacc):
     """Verifica se a célula B1 contém TRUE para executar o script."""
