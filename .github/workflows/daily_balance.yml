@@ -28,7 +28,9 @@ jobs:
           echo '${{ secrets.GOOGLE_CREDENTIALS }}' > controles.json
 
       - name: Run balance check
-        run: python daily_balance_noxpay.py
+        run: |
+          echo "Iniciando execução do script..."
+          python -u daily_balance_noxpay.py  # -u força output sem buffer
         env:
           SSH_HOST: ${{ secrets.SSH_HOST }}
           SSH_PORT: ${{ secrets.SSH_PORT }}
