@@ -5,6 +5,8 @@ import pandas as pd
 from datetime import datetime
 import pygsheets
 import os
+import concurrent.futures
+from concurrent.futures import ThreadPoolExecutor
 
 # Configurações via variáveis de ambiente
 SSH_HOST = os.getenv('SSH_HOST')
@@ -131,17 +133,24 @@ def update_status(wks_IUGU_subacc, status):
     except Exception as e:
         print(f"Erro ao atualizar status: {e}")
 
+def process_account(args):
+    ssh_client, token, account = args
+    try:
+        print(f"\nProcessando conta: {account}")
+        return get_account_balance(ssh_client, token, account)
+    except Exception as e:
+        print(f"Erro ao processar conta {account}: {e}")
+        return None
+
 def check_all_accounts():
     try:
         print("\nIniciando conexão com Google Sheets...")
-        # Conexão com Google Sheets
         gc = pygsheets.authorize(service_file="controles.json")
         sh_gateway = gc.open("Gateway")
         wks_subcontas = sh_gateway.worksheet_by_title("Subcontas")
         sh_balance = gc.open("Daily Balance - Nox Pay")
-        wks_IUGU_subacc = sh_balance.worksheet_by_title("IUGU Subcontas TESTE")
+        wks_IUGU_subacc = sh_balance.worksheet_by_title("IUGU Subcontas")
 
-        # Verifica o trigger
         if not check_trigger(wks_IUGU_subacc):
             print("Trigger não está ativo (B1 = FALSE). Encerrando execução.")
             return
@@ -149,97 +158,91 @@ def check_all_accounts():
         print("Trigger ativo! Iniciando atualização...")
         update_status(wks_IUGU_subacc, "Atualizando...")
 
-        # Lê as subcontas do Google Sheets (origem e destino)
+        # Lê as subcontas do Google Sheets
         df_subcontas = pd.DataFrame(wks_subcontas.get_all_records())
         df_subcontas_ativas = df_subcontas[df_subcontas["NOX"] == "SIM"]
-        
-        # Lê as contas existentes na planilha de destino
-        contas_destino = pd.DataFrame(wks_IUGU_subacc.get_all_records())
-        contas_existentes = set()
-        if not contas_destino.empty and 'Account' in contas_destino.columns:
-            contas_existentes = set(contas_destino['Account'].astype(str))
 
-        # Conecta ao SSH
-        ssh_client = connect_ssh()
-        
-        # Lista para armazenar resultados
-        resultados = []
-        
-        # Processa cada conta
-        total_contas = len(df_subcontas_ativas)
-        print(f"\nProcessando {total_contas} contas...")
+        # Cria pool de conexões SSH
+        ssh_pool = []
+        max_workers = 5  # Número de threads simultâneas
+        for _ in range(max_workers):
+            ssh_client = connect_ssh()
+            ssh_pool.append(ssh_client)
 
+        # Prepara os argumentos para processamento paralelo
+        args_list = []
         for idx, row in df_subcontas_ativas.iterrows():
-            token = row["live_token_full"]
-            account = str(row["account"])
-            
-            print(f"\nProcessando conta {idx + 1}/{total_contas}")
-            print(f"Account: {account}")
-            
-            # Indica se é uma conta nova ou existente
-            if account in contas_existentes:
-                print(f"Conta {account} encontrada na planilha de destino, atualizando...")
-            else:
-                print(f"Nova conta ativa detectada: {account}, adicionando...")
-            
-            resultado = get_account_balance(ssh_client, token, account)
-            
-            if resultado:
-                resultados.append(resultado)
-                print(f"Resultado:")
-                print(f"- Saldo: R$ {resultado['saldo_cents']:,.2f}")
-                print(f"- Total transações: {resultado['transactions_total']}")
-            else:
-                print(f"Não foi possível obter dados para a conta {account}")
-            
-            # Pausa entre contas
-            sleep(5)
+            ssh_client = ssh_pool[idx % max_workers]  # Distribui as conexões SSH
+            args_list.append((ssh_client, row["live_token_full"], row["account"]))
 
-        # Estatísticas finais
-        contas_processadas = set(r['Account'] for r in resultados)
-        contas_novas = contas_processadas - contas_existentes
-        contas_atualizadas = contas_processadas & contas_existentes
+        resultados = []
+        total_contas = len(df_subcontas_ativas)
+        contas_processadas = 0
 
-        print("\n=== Estatísticas de Processamento ===")
-        print(f"Total de contas processadas: {len(resultados)}")
-        print(f"Contas novas adicionadas: {len(contas_novas)}")
-        print(f"Contas existentes atualizadas: {len(contas_atualizadas)}")
-        if contas_novas:
-            print("\nNovas contas adicionadas:")
-            for conta in contas_novas:
-                print(f"- {conta}")
+        # Processa as contas em paralelo
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = []
+            
+            # Submete as tarefas em lotes para controle de carga
+            batch_size = 10
+            for i in range(0, len(args_list), batch_size):
+                batch = args_list[i:i + batch_size]
+                
+                # Submete o lote atual
+                batch_futures = [executor.submit(process_account, args) for args in batch]
+                futures.extend(batch_futures)
+                
+                # Aguarda o lote atual completar
+                for future in concurrent.futures.as_completed(batch_futures):
+                    resultado = future.result()
+                    if resultado:
+                        resultados.append(resultado)
+                        contas_processadas += 1
+                        print(f"Progresso: {contas_processadas}/{total_contas}")
+                
+                # Pequena pausa entre lotes
+                if i + batch_size < len(args_list):
+                    print("Pausa entre lotes...")
+                    sleep(5)
 
         # Cria DataFrame com resultados
-        df_resultados = pd.DataFrame(resultados)
-        
-        # Garante a ordem das colunas
-        df_resultados = df_resultados[["Account", "transactions_total", "saldo_cents"]]
-        
-        # Atualiza o Google Sheets
-        rodado = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        wks_IUGU_subacc.update_value("A1", f"Última atualização: {rodado}")
-        
-        # Exporta para o Google Sheets
-        wks_IUGU_subacc.set_dataframe(
-            df_resultados, 
-            (2,1), 
-            encoding='utf-8', 
-            copy_head=True
-        )
-        
-        print(f"\nExecução concluída: {rodado}")
+        if resultados:
+            df_resultados = pd.DataFrame(resultados)
+            df_resultados = df_resultados[["Account", "transactions_total", "saldo_cents"]]
+            
+            # Atualiza o Google Sheets
+            rodado = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            wks_IUGU_subacc.update_value("A1", f"Última atualização: {rodado}")
+            
+            wks_IUGU_subacc.set_dataframe(
+                df_resultados, 
+                (2,1), 
+                encoding='utf-8', 
+                copy_head=True
+            )
+
+        print("\nProcessamento concluído!")
+        print(f"Total de contas processadas: {len(resultados)}")
+        print(f"Execução concluída: {rodado}")
         
         # Reset do trigger
         reset_trigger(wks_IUGU_subacc)
         
-        ssh_client.close()
-        
+        # Fecha todas as conexões SSH
+        for ssh_client in ssh_pool:
+            ssh_client.close()
+
     except Exception as e:
         print(f"Erro durante a execução: {e}")
         import traceback
         print(traceback.format_exc())
-        if 'ssh_client' in locals():
-            ssh_client.close()
+        # Fecha conexões SSH em caso de erro
+        if 'ssh_pool' in locals():
+            for ssh_client in ssh_pool:
+                try:
+                    ssh_client.close()
+                except:
+                    pass
 
 if __name__ == "__main__":
     print("Iniciando script...")
