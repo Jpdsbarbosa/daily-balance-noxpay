@@ -2,8 +2,11 @@ name: Daily Balance NOX Pay
 
 on:
   schedule:
-    - cron: '*/2 * * * *'  # Executa a cada 2 minutos
-  workflow_dispatch:        # Mantém a execução manual
+    - cron: '*/2 * * * *'  # A cada 2 minutos       
+  workflow_dispatch:      # Permite execução manual
+
+permissions:
+  contents: read
 
 jobs:
   run-balance-check:
@@ -11,7 +14,9 @@ jobs:
     
     steps:
       - name: Checkout code
-        uses: actions/checkout@v2
+        uses: actions/checkout@v3
+        with:
+          ref: main          # Especifica a branch principal
 
       - name: Set up Python
         uses: actions/setup-python@v2
@@ -29,8 +34,9 @@ jobs:
 
       - name: Run balance check
         run: |
-          echo "Iniciando execução do script..."
+          echo "=== Iniciando execução em $(date) ==="
           python -u daily_balance_noxpay.py
+          echo "=== Finalizado em $(date) ==="
         env:
           SSH_HOST: ${{ secrets.SSH_HOST }}
           SSH_PORT: ${{ secrets.SSH_PORT }}
