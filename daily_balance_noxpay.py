@@ -14,6 +14,7 @@ SSH_HOST = os.getenv('SSH_HOST')
 SSH_PORT = int(os.getenv('SSH_PORT', "22"))
 SSH_USERNAME = os.getenv('SSH_USERNAME')
 SSH_PASSWORD = os.getenv('SSH_PASSWORD')
+API_TOKEN_NOX = os.getenv('API_TOKEN_NOX')  # Mantendo o token NOX
 url_financial = "https://api.iugu.com/v1/accounts/financial"
 
 def connect_ssh():
