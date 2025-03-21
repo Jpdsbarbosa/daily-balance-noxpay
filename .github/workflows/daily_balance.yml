@@ -36,7 +36,11 @@ jobs:
           echo '${{ secrets.GOOGLE_CREDENTIALS }}' > controles.json
 
       - name: Run balance check
-        run: python daily_balance_noxpay.py
+        run: |
+          set -x  # Mostra os comandos sendo executados
+          echo "=== Iniciando execução em $(date) ==="
+          python -u daily_balance_noxpay.py  # Flag -u força output sem buffer
+          echo "=== Finalizado em $(date) ==="
         env:
           SSH_HOST: ${{ secrets.SSH_HOST }}
           SSH_PORT: ${{ secrets.SSH_PORT }}
