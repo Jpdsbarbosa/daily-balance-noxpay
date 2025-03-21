@@ -9,6 +9,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
 jobs:
   run-balance-check:
     runs-on: ubuntu-latest
@@ -32,12 +36,9 @@ jobs:
           echo '${{ secrets.GOOGLE_CREDENTIALS }}' > controles.json
 
       - name: Run balance check
-        run: |
-          echo "=== Iniciando execução em $(date) ==="
-          python -u daily_balance_noxpay.py
-          echo "=== Finalizado em $(date) ==="
+        run: python daily_balance_noxpay.py
         env:
           SSH_HOST: ${{ secrets.SSH_HOST }}
           SSH_PORT: ${{ secrets.SSH_PORT }}
           SSH_USERNAME: ${{ secrets.SSH_USERNAME }}
-          SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }} 
+          SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
