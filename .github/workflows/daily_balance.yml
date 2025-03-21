@@ -2,28 +2,26 @@ name: Daily Balance NOX Pay
 
 on:
   schedule:
-    - cron: '*/5 * * * *'  # Executa a cada 2 minutos
+    - cron: '*/2 * * * *'  # Executa a cada 2 minutos
   workflow_dispatch:        # Mantém a execução manual
 
 jobs:
   run-balance-check:
     runs-on: ubuntu-latest
-    timeout-minutes: 5     # Adiciona timeout
     
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3  # Atualiza para v3
+        uses: actions/checkout@v2
 
       - name: Set up Python
-        uses: actions/setup-python@v4  # Atualiza para v4
+        uses: actions/setup-python@v2
         with:
           python-version: '3.x'
-          cache: 'pip'    # Adiciona cache de dependências
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          pip install pygsheets pandas paramiko
 
       - name: Setup Google Credentials
         run: |
