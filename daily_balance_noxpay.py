@@ -4,9 +4,6 @@ from time import sleep
 import pandas as pd
 from datetime import datetime
 import pygsheets
-import sys
-import time
-import traceback
 import os
 
 # Configurações via variáveis de ambiente
@@ -14,7 +11,6 @@ SSH_HOST = os.getenv('SSH_HOST')
 SSH_PORT = int(os.getenv('SSH_PORT', "22"))
 SSH_USERNAME = os.getenv('SSH_USERNAME')
 SSH_PASSWORD = os.getenv('SSH_PASSWORD')
-API_TOKEN_NOX = os.getenv('API_TOKEN_NOX')
 url_financial = "https://api.iugu.com/v1/accounts/financial"
 
 def connect_ssh():
@@ -95,7 +91,6 @@ def get_account_balance(ssh_client, token, account_id):
                 }
     except Exception as e:
         print(f"Erro ao processar conta {account_id}: {e}")
-        # Retornando estrutura padrão em caso de erro
         return {
             "Account": account_id,
             "transactions_total": 0,
@@ -129,37 +124,32 @@ def update_status(wks_IUGU_subacc, status):
 
 def check_all_accounts():
     try:
-        print("="*50)
-        print(f"Iniciando execução em: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        print("="*50)
-
+        print("\nIniciando conexão com Google Sheets...")
         # Conexão com Google Sheets
-        print("\nConectando ao Google Sheets...")
         gc = pygsheets.authorize(service_file="controles.json")
         sh_gateway = gc.open("Gateway")
         wks_subcontas = sh_gateway.worksheet_by_title("Subcontas")
         sh_balance = gc.open("Daily Balance - Nox Pay")
         wks_IUGU_subacc = sh_balance.worksheet_by_title("IUGU Subcontas")
-        print("Conexão com Google Sheets estabelecida!")
 
-        # Verifica o trigger primeiro
-        print("\nVerificando trigger...")
+        # Verifica o trigger
+        print("Verificando trigger...")
         if not check_trigger(wks_IUGU_subacc):
             print("Trigger não está ativo (B1 = FALSE). Encerrando execução.")
             return
 
-        print("\nTRIGGER ATIVO! Iniciando processo de atualização...")
+        print("Trigger ativo! Iniciando atualização...")
         update_status(wks_IUGU_subacc, "Atualizando...")
 
-        # Conecta ao SSH
-        ssh_client = connect_ssh()
-        
         # Lê as subcontas do Google Sheets
         df_subcontas = pd.DataFrame(wks_subcontas.get_all_records())
         
         # Filtra apenas subcontas ativas
         df_subcontas_ativas = df_subcontas[df_subcontas["NOX"] == "SIM"]
 
+        # Conecta ao SSH
+        ssh_client = connect_ssh()
+        
         # Lista para armazenar resultados
         resultados = []
         
@@ -195,7 +185,7 @@ def check_all_accounts():
         rodado = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         wks_IUGU_subacc.update_value("A1", f"Última atualização: {rodado}")
         
-        # Usa as mesmas configurações de exportação do arquivo teste
+        # Exporta para o Google Sheets
         wks_IUGU_subacc.set_dataframe(
             df_resultados, 
             (2,1), 
@@ -207,18 +197,17 @@ def check_all_accounts():
         print(f"Total de contas processadas: {len(resultados)}")
         print(f"Execução concluída: {rodado}")
         
-        # Não esquecer de resetar o trigger no final
+        # Reset do trigger
         reset_trigger(wks_IUGU_subacc)
         
-        print("\n" + "="*50)
-        print("Execução finalizada com sucesso!")
-        print("="*50)
-
+        ssh_client.close()
+        
     except Exception as e:
-        print("\n" + "="*50)
-        print(f"ERRO DURANTE A EXECUÇÃO: {e}")
+        print(f"Erro durante a execução: {e}")
+        import traceback
         print(traceback.format_exc())
-        print("="*50)
+        if 'ssh_client' in locals():
+            ssh_client.close()
 
 if __name__ == "__main__":
     print("Iniciando verificação...")

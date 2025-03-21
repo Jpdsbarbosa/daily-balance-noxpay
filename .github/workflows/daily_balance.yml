@@ -30,10 +30,9 @@ jobs:
       - name: Run balance check
         run: |
           echo "Iniciando execução do script..."
-          python -u daily_balance_noxpay.py  # -u força output sem buffer
+          python -u daily_balance_noxpay.py
         env:
           SSH_HOST: ${{ secrets.SSH_HOST }}
           SSH_PORT: ${{ secrets.SSH_PORT }}
           SSH_USERNAME: ${{ secrets.SSH_USERNAME }}
-          SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
-          API_TOKEN_NOX: ${{ secrets.API_TOKEN_NOX }} 
+          SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }} 
