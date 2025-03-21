@@ -264,5 +264,14 @@ def check_all_accounts():
             ssh_client.close()
 
 if __name__ == "__main__":
-    print("Iniciando verificação...")
-    check_all_accounts()
+    print("Iniciando script...")
+    print("Verificando variáveis de ambiente...")
+    for env_var in ['SSH_HOST', 'SSH_PORT', 'SSH_USERNAME', 'SSH_PASSWORD']:
+        print(f"- {env_var}: {'✓' if os.getenv(env_var) else '✗'}")
+    
+    try:
+        check_all_accounts()
+    except Exception as e:
+        print(f"Erro fatal: {e}")
+        import traceback
+        print(traceback.format_exc())
