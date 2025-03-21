@@ -2,11 +2,13 @@ import paramiko
 import json
 from time import sleep
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta
 import pygsheets
 import os
 import concurrent.futures
 from concurrent.futures import ThreadPoolExecutor
+import time
+from threading import Lock
 
 # Configurações via variáveis de ambiente
 SSH_HOST = os.getenv('SSH_HOST')
@@ -14,6 +16,35 @@ SSH_PORT = int(os.getenv('SSH_PORT', "22"))
 SSH_USERNAME = os.getenv('SSH_USERNAME')
 SSH_PASSWORD = os.getenv('SSH_PASSWORD')
 url_financial = "https://api.iugu.com/v1/accounts/financial"
+
+class RateLimiter:
+    def __init__(self, max_requests=900, time_window=60):  # 900 req/min para ter margem de segurança
+        self.max_requests = max_requests
+        self.time_window = time_window  # em segundos
+        self.requests = []
+        self.lock = Lock()
+
+    def wait_if_needed(self):
+        with self.lock:
+            now = datetime.now()
+            # Remove requisições antigas
+            self.requests = [req_time for req_time in self.requests 
+                           if now - req_time < timedelta(seconds=self.time_window)]
+            
+            # Se atingiu o limite, espera
+            if len(self.requests) >= self.max_requests:
+                oldest = min(self.requests)
+                sleep_time = (oldest + timedelta(seconds=self.time_window) - now).total_seconds()
+                if sleep_time > 0:
+                    print(f"Rate limit atingido. Aguardando {sleep_time:.2f} segundos...")
+                    time.sleep(sleep_time)
+                self.requests = []  # Reset após espera
+            
+            # Registra nova requisição
+            self.requests.append(now)
+
+# Cria instância global do rate limiter
+rate_limiter = RateLimiter()
 
 def connect_ssh():
     print("Conectando ao servidor SSH...")
@@ -31,46 +62,44 @@ def connect_ssh():
     print("Conexão SSH estabelecida com sucesso.")
     return ssh_client
 
-def execute_curl(ssh_client, url, max_retries=5):
+def execute_curl(ssh_client, url, max_retries=2):
     for attempt in range(max_retries):
         try:
+            # Verifica rate limit antes de fazer a requisição
+            rate_limiter.wait_if_needed()
+            
             if "?" in url:
                 url += "&limit=50"
             else:
                 url += "?limit=50"
                 
-            curl_cmd = f'curl -s -m 180 "{url}" -H "accept: application/json"'
-            print(f"Tentativa {attempt + 1}/{max_retries}: Executando consulta...")
+            curl_cmd = f'curl -s -m 60 "{url}" -H "accept: application/json"'
             
-            stdin, stdout, stderr = ssh_client.exec_command(curl_cmd, timeout=180)
+            stdin, stdout, stderr = ssh_client.exec_command(curl_cmd, timeout=60)
             error = stderr.read().decode('utf-8')
             response = stdout.read().decode('utf-8')
             
             if error:
                 print(f"Erro no curl: {error}")
-                sleep(10)
+                sleep(5)
                 continue
                 
-            if "error code: 504" in response:
-                print("Erro 504 detectado, aguardando antes de tentar novamente...")
-                sleep(15)
+            if "error code: 504" in response or "rate limit exceeded" in response.lower():
+                print("Rate limit ou timeout detectado, aguardando...")
+                sleep(5)
                 continue
                 
             try:
                 return json.loads(response)
             except json.JSONDecodeError:
                 print(f"Erro ao decodificar JSON. Resposta: {response[:200]}...")
-                sleep(10)
+                sleep(5)
                 continue
                 
         except Exception as e:
             print(f"Erro na tentativa {attempt + 1}: {e}")
-            sleep(10)
+            sleep(5)
             
-        if attempt < max_retries - 1:
-            print("Tentando novamente após erro...")
-            
-    print(f"Todas as {max_retries} tentativas falharam para a URL: {url}")
     return None
 
 def get_account_balance(ssh_client, token, account_id):
@@ -154,6 +183,40 @@ def validate_account(ssh_client, token, account):
         print(f"Erro ao validar conta {account}: {e}")
         return False
 
+def validate_accounts_parallel(df_subcontas_ativas, max_workers=3):  # Reduzido para 3
+    """Valida as contas em paralelo"""
+    contas_validas = []
+    
+    def validate_single_account(row):
+        try:
+            ssh_client = connect_ssh()
+            token = row["live_token_full"]
+            account = row["account"]
+            print(f"Validando conta: {account}")
+            
+            response = execute_curl(ssh_client, f"{url_financial}?api_token={token}&limit=1")
+            ssh_client.close()
+            
+            if response and "transactions_total" in response:
+                print(f"Conta {account} validada com sucesso")
+                return True, (token, account)
+            return False, None
+        except Exception as e:
+            print(f"Erro ao validar conta {account}: {e}")
+            if 'ssh_client' in locals():
+                ssh_client.close()
+            return False, None
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [executor.submit(validate_single_account, row) 
+                  for _, row in df_subcontas_ativas.iterrows()]
+        for future in concurrent.futures.as_completed(futures):
+            success, result = future.result()
+            if success:
+                contas_validas.append(result)
+    
+    return contas_validas
+
 def check_all_accounts():
     try:
         print("\nIniciando conexão com Google Sheets...")
@@ -174,28 +237,14 @@ def check_all_accounts():
         df_subcontas = pd.DataFrame(wks_subcontas.get_all_records())
         df_subcontas_ativas = df_subcontas[df_subcontas["NOX"] == "SIM"]
 
-        # Conecta ao SSH para validação
-        ssh_client = connect_ssh()
-        
         # Valida as contas primeiro
-        contas_validas = []
-        print("\nValidando contas...")
-        for idx, row in df_subcontas_ativas.iterrows():
-            token = row["live_token_full"]
-            account = row["account"]
-            print(f"\nValidando conta {idx + 1}/{len(df_subcontas_ativas)}: {account}")
-            
-            if validate_account(ssh_client, token, account):
-                contas_validas.append((token, account))
-            sleep(1)  # Pequena pausa entre validações
-        
-        ssh_client.close()
+        contas_validas = validate_accounts_parallel(df_subcontas_ativas)
         
         print(f"\nContas válidas: {len(contas_validas)} de {len(df_subcontas_ativas)}")
 
         # Cria pool de conexões SSH para processamento paralelo
         ssh_pool = []
-        max_workers = 3  # Reduzido para 3 workers simultâneos
+        max_workers = 3  # Mantido em 3 workers
         for _ in range(max_workers):
             ssh_client = connect_ssh()
             ssh_pool.append(ssh_client)
@@ -209,7 +258,7 @@ def check_all_accounts():
             futures = []
             
             # Processa em lotes menores
-            batch_size = 5
+            batch_size = 3  # Reduzido para 3
             for i in range(0, len(contas_validas), batch_size):
                 batch = contas_validas[i:i + batch_size]
                 
