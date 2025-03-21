@@ -71,59 +71,42 @@ def execute_curl(ssh_client, url, max_retries=5):
     print(f"Todas as {max_retries} tentativas falharam para a URL: {url}")
     return None
 
-def get_account_balance(ssh_client, token, account):
-    if not token or token.strip() == "":
-        print(f"Token vazio para conta {account}, pulando...")
-        return None
-
+def get_account_balance(ssh_client, token, account_id):
     try:
-        print(f"Consultando saldo da conta {account}...")
-        command = f'curl -H "Authorization: Basic {token}" https://api.iugu.com/v1/balance'
-        stdin, stdout, stderr = ssh_client.exec_command(command)
-        response = stdout.read().decode()
-        
-        # Tenta parsear a resposta
-        data = json.loads(response)
-        
-        # Verifica se há erro de "Not Found"
-        if "errors" in data and "Not Found" in str(data["errors"]):
-            print(f"Conta {account} não encontrada na IUGU (possivelmente inativa ou removida)")
-            return None
+        max_retries = 3
+        for attempt in range(max_retries):
+            # Primeiro pega o total de transações
+            response = execute_curl(ssh_client, f"{url_financial}?api_token={token}")
             
-        # Verifica timeout
-        if "504 Gateway Time-out" in response:
-            print(f"Timeout na consulta da conta {account}")
-            # Aqui podemos tentar novamente após um delay
-            sleep(10)
-            return get_account_balance(ssh_client, token, account)
+            if response and "transactions_total" in response:
+                total_transactions = response["transactions_total"]
+                
+                # Pega apenas as últimas transações
+                start = max(0, total_transactions - 50)
+                response = execute_curl(ssh_client, f"{url_financial}?api_token={token}&start={start}")
+                
+                if response and response.get("transactions"):
+                    last_transaction = response["transactions"][-1]
+                    saldo_cents = float(last_transaction["balance_cents"]) / 100
+                    return {
+                        "Account": account_id,
+                        "transactions_total": total_transactions,
+                        "saldo_cents": saldo_cents
+                    }
             
-        if 'total_cents' not in data:
-            print(f"Resposta inválida para saldo: {response}")
-            return None
-        
-        # Se chegou aqui, conseguiu o saldo. Agora busca transações
-        sleep(2)  # Pequena pausa entre as chamadas
-        
-        command_trans = f'curl -H "Authorization: Basic {token}" "https://api.iugu.com/v1/financial_transaction_requests?limit=1"'
-        stdin, stdout, stderr = ssh_client.exec_command(command_trans)
-        trans_response = stdout.read().decode()
-        
-        if "504 Gateway Time-out" in trans_response:
-            print("Timeout ao buscar transações, considerando 0")
-            total_items = 0
-        else:
-            trans_data = json.loads(trans_response)
-            total_items = trans_data.get('total_items', 0)
-        
-        return {
-            "Account": account,
-            "saldo_cents": data['total_cents'] / 100.0,
-            "transactions_total": total_items
-        }
-            
+            if attempt < max_retries - 1:
+                print(f"Tentativa {attempt + 1} falhou, aguardando 30 segundos...")
+                sleep(30)
+                
     except Exception as e:
-        print(f"Erro ao consultar conta {account}: {str(e)}")
-        return None
+        print(f"Erro ao processar conta {account_id}: {e}")
+    
+    print(f"Não foi possível obter saldo para a conta {account_id}")
+    return {
+        "Account": account_id,
+        "transactions_total": 0,
+        "saldo_cents": 0
+    }
 
 def check_trigger(wks_IUGU_subacc):
     """Verifica se a célula B1 contém TRUE para executar o script."""
