@@ -1,126 +1,109 @@
-import pygsheets
-import pandas as pd
-import time
-from datetime import datetime
-from math import floor
-from time import sleep
-import sys
-import json
 import paramiko
-import atexit
+import json
+from time import sleep
+import pandas as pd
+from datetime import datetime
+import pygsheets
+import sys
+import time
+import traceback
 import os
 
-############# CONFIGURAÇÕES ###################################################
-
-# Configuração da API
-api_token_NOX = os.getenv('API_TOKEN_NOX')
-url_financial = "https://api.iugu.com/v1/accounts/financial"
-
-# Configuração SSH
+# Configurações via variáveis de ambiente
 SSH_HOST = os.getenv('SSH_HOST')
 SSH_PORT = int(os.getenv('SSH_PORT', "22"))
 SSH_USERNAME = os.getenv('SSH_USERNAME')
 SSH_PASSWORD = os.getenv('SSH_PASSWORD')
-
-# Variáveis globais
-ssh_client = None
-
-############# CONFIGURAÇÃO SSH #############
+url_financial = "https://api.iugu.com/v1/accounts/financial"
 
 def connect_ssh():
-    """
-    Estabelece uma conexão SSH com o servidor.
-    """
-    global ssh_client
-    
-    try:
-        print(f"Conectando ao servidor SSH {SSH_HOST}...")
-        
-        # Cria o cliente SSH
-        ssh_client = paramiko.SSHClient()
-        ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        ssh_client.connect(
-            hostname=SSH_HOST, 
-            port=SSH_PORT, 
-            username=SSH_USERNAME, 
-            password=SSH_PASSWORD,
-            allow_agent=False,
-            look_for_keys=False
-        )
-        
-        print("Conexão SSH estabelecida com sucesso.")
-        return True
-            
-    except Exception as e:
-        print(f"Erro ao conectar ao servidor SSH: {e}")
-        close_ssh()
-        return False
+    print("Conectando ao servidor SSH...")
+    ssh_client = paramiko.SSHClient()
+    ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    ssh_client.connect(
+        hostname=SSH_HOST,
+        port=SSH_PORT,
+        username=SSH_USERNAME,
+        password=SSH_PASSWORD,
+        allow_agent=False,
+        look_for_keys=False,
+        timeout=120
+    )
+    print("Conexão SSH estabelecida com sucesso.")
+    return ssh_client
 
-def close_ssh():
-    """Encerra a conexão SSH."""
-    global ssh_client
-    
-    if ssh_client:
+def execute_curl(ssh_client, url, max_retries=3):
+    for attempt in range(max_retries):
         try:
-            ssh_client.close()
-            print("Conexão SSH encerrada.")
-        except:
-            pass
-        ssh_client = None
-
-atexit.register(close_ssh)
-
-def execute_curl(url, token):
-    """
-    Executa um comando curl no servidor SSH para fazer uma requisição à API.
-    Isso garante que a requisição saia do IP do servidor.
-    """
-    if not ssh_client:
-        print("Erro: Sem conexão SSH estabelecida")
-        return None
-    
-    try:
-        curl_cmd = f'curl -s -X GET "{url}?api_token={token}" -H "accept: application/json"'
-        
-        print(f"Executando comando no servidor...")
-        
-        stdin, stdout, stderr = ssh_client.exec_command(curl_cmd, timeout=60)
-        
-        response = stdout.read().decode('utf-8')
-        error = stderr.read().decode('utf-8')
-        
-        if error:
-            print(f"Erro na execução do comando: {error}")
-            return None
+            if "?" in url:
+                url += "&limit=50"
+            else:
+                url += "?limit=50"
+                
+            curl_cmd = f'curl -s -m 180 "{url}" -H "accept: application/json"'
+            print(f"Tentativa {attempt + 1}/{max_retries}: Executando consulta...")
             
-        try:
-            return json.loads(response)
+            stdin, stdout, stderr = ssh_client.exec_command(curl_cmd, timeout=180)
+            error = stderr.read().decode('utf-8')
+            response = stdout.read().decode('utf-8')
+            
+            if error:
+                print(f"Erro no curl: {error}")
+                continue
+                
+            if "error code: 504" in response:
+                print("Erro 504 detectado, aguardando antes de tentar novamente...")
+                sleep(5)
+                continue
+                
+            try:
+                return json.loads(response)
+            except json.JSONDecodeError:
+                print(f"Erro ao decodificar JSON. Resposta: {response[:200]}...")
+                sleep(5)
+                continue
+                
         except Exception as e:
-            print(f"Erro ao processar resposta JSON: {e}")
-            print(f"Resposta: {response}")
-            return None
-    
+            print(f"Erro na tentativa {attempt + 1}: {e}")
+            sleep(5)
+            
+        if attempt < max_retries - 1:
+            print("Tentando novamente...")
+            
+    return None
+
+def get_account_balance(ssh_client, token, account_id):
+    try:
+        # Primeiro pega o total de transações
+        response = execute_curl(ssh_client, f"{url_financial}?api_token={token}")
+        
+        if response and "transactions_total" in response:
+            total_transactions = response["transactions_total"]
+            
+            # Pega apenas as últimas transações
+            start = max(0, total_transactions - 50)
+            response = execute_curl(ssh_client, f"{url_financial}?api_token={token}&start={start}")
+            
+            if response and response.get("transactions"):
+                last_transaction = response["transactions"][-1]
+                saldo_cents = float(last_transaction["balance_cents"]) / 100
+                return {
+                    "Account": account_id,
+                    "transactions_total": total_transactions,
+                    "saldo_cents": saldo_cents
+                }
     except Exception as e:
-        print(f"Erro ao executar comando no servidor: {e}")
-        return None
+        print(f"Erro ao processar conta {account_id}: {e}")
+        # Retornando estrutura padrão em caso de erro
+        return {
+            "Account": account_id,
+            "transactions_total": 0,
+            "saldo_cents": 0
+        }
+    
+    return None
 
-############# CONEXÃO COM GOOGLE SHEETS ###########
-
-try:
-    gc = pygsheets.authorize(service_file="controles.json")
-
-    sh_gateway = gc.open("Gateway")
-    wks_subcontas = sh_gateway.worksheet_by_title("Subcontas")
-    sh_balance = gc.open("Daily Balance - Nox Pay")
-
-    wks_IUGU_subacc = sh_balance.worksheet_by_title("IUGU Subcontas")
-except Exception as e:
-    print(f"Erro ao conectar ao Google Sheets: {e}")
-    sys.exit(1)
-
-############# TRIGGER #############
-
-def check_trigger():
+def check_trigger(wks_IUGU_subacc):
     """Verifica se a célula B1 contém TRUE para executar o script."""
     try:
         status = wks_IUGU_subacc.get_value("B1")
@@ -129,145 +112,103 @@ def check_trigger():
         print(f"Erro ao verificar trigger: {e}")
         return False
 
-def reset_trigger():
+def reset_trigger(wks_IUGU_subacc):
     """Após a execução, redefine a célula B1 para FALSE."""
     try:
         wks_IUGU_subacc.update_value("B1", "FALSE")
     except Exception as e:
         print(f"Erro ao resetar trigger: {e}")
 
-def update_status(status):
+def update_status(wks_IUGU_subacc, status):
     """Atualiza o status de execução na célula A1."""
     try:
         wks_IUGU_subacc.update_value("A1", status)
     except Exception as e:
         print(f"Erro ao atualizar status: {e}")
 
-############# FUNÇÃO PARA OBTER SALDO COM `start` #############################
-
-def fetch_balance_with_start(token):
-    """
-    Obtém o saldo mais recente da conta, utilizando `start` para pular registros
-    e garantir que a última requisição tenha menos de 1000 transações.
-    """
+def check_all_accounts():
     try:
-        url_last = f"{url_financial}?limit=1&sort=-created_at"
-        response_data = execute_curl(url_last, token)
+        # Conexão com Google Sheets
+        gc = pygsheets.authorize(service_file="controles.json")
+        sh_gateway = gc.open("Gateway")
+        wks_subcontas = sh_gateway.worksheet_by_title("Subcontas")
+        sh_balance = gc.open("Daily Balance - Nox Pay")
+        wks_IUGU_subacc = sh_balance.worksheet_by_title("IUGU Subcontas")
+
+        # Verifica o trigger primeiro
+        print(f"Verificando trigger em: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        if not check_trigger(wks_IUGU_subacc):
+            print("Trigger não está ativo (B1 = FALSE). Aguardando próxima verificação.")
+            sys.exit(0)
+
+        print("Trigger ativo! Iniciando processo de atualização...")
+        update_status(wks_IUGU_subacc, "Atualizando...")
+
+        # Conecta ao SSH
+        ssh_client = connect_ssh()
         
-        if response_data and response_data.get('transactions'):
-            last_transaction = response_data['transactions'][0]
-            return (
-                last_transaction["balance"],
-                float(last_transaction["balance_cents"]) / 100,
-                response_data.get("transactions_total", 0)
-            )
+        # Lê as subcontas do Google Sheets
+        df_subcontas = pd.DataFrame(wks_subcontas.get_all_records())
         
-        print("Tentando método alternativo...")
-        response_data = execute_curl(url_financial, token)
+        # Filtra apenas subcontas ativas
+        df_subcontas_ativas = df_subcontas[df_subcontas["NOX"] == "SIM"]
+
+        # Lista para armazenar resultados
+        resultados = []
         
-        if not response_data:
-            print("Não foi possível obter dados da API")
-            return None, 0, 0
-            
-        transactions_total = response_data.get("transactions_total", 0)
-        
-        transactions = response_data.get("transactions", [])
-        if transactions:
-            last_transaction = transactions[-1]
-            return (
-                last_transaction["balance"],
-                float(last_transaction["balance_cents"]) / 100,
-                transactions_total
-            )
+        # Processa cada conta
+        total_contas = len(df_subcontas_ativas)
+        print(f"\nProcessando {total_contas} contas...")
 
-    except Exception as e:
-        print(f"Erro ao buscar transações: {e}")
-
-    return None, 0, 0
-
-############# CONSULTAR SALDOS ################################################
-
-def consultar_saldos():
-    """
-    Função principal que obtém os saldos das subcontas e exporta para o Google Sheets.
-    """
-    df_subcontas = pd.DataFrame(wks_subcontas.get_all_records())
-
-    df_subcontas_ativas = df_subcontas[df_subcontas["NOX"] == "SIM"]
-
-    df_subcontas_ativas = df_subcontas_ativas[["live_token_full", "account"]]
-
-    saldo_subcontas = []
-
-    for _, row in df_subcontas_ativas.iterrows():
-        try:
+        for idx, row in df_subcontas_ativas.iterrows():
             token = row["live_token_full"]
             account = row["account"]
-
-            saldo_final, saldo_cents, transactions_total = fetch_balance_with_start(token)
-
-            saldo_subcontas.append({
-                "account": account,
-                "transactions_total": transactions_total,
-                "saldo_cents": saldo_cents
-            })
-
-            print(f"Processado: {account} | Saldo: {saldo_final} | Transações: {transactions_total}")
-
+            
+            print(f"\nProcessando conta {idx + 1}/{total_contas}")
+            print(f"Account: {account}")
+            
+            resultado = get_account_balance(ssh_client, token, account)
+            
+            if resultado:
+                resultados.append(resultado)
+                print(f"Resultado:")
+                print(f"- Saldo: R$ {resultado['saldo_cents']:,.2f}")
+                print(f"- Total transações: {resultado['transactions_total']}")
+            
+            # Pequena pausa entre as requisições
             sleep(2)
-
-        except Exception as e:
-            print(f"Erro ao processar a subconta {row['account']}: {e}")
-            saldo_subcontas.append({
-                "account": row['account'],
-                "transactions_total": 0,
-                "saldo_cents": 0
-            })
-
-    df_saldo_subcontas = pd.DataFrame(saldo_subcontas)
-
-    ############# EXPORTAR PARA O GOOGLE SHEETS ##############################
-
-    rodado = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    wks_IUGU_subacc.update_value("A1", f"Última atualização: {rodado}")
-
-    wks_IUGU_subacc.set_dataframe(df_saldo_subcontas, (2, 1), encoding="utf-8", copy_head=True)
-
-    print(f"Execução concluída: {rodado}")
-
-############# AGENDADOR ######################################
-
-def main():
-    print(f"Verificando trigger em: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    
-    # Verifica o trigger primeiro
-    if not check_trigger():
-        print("Trigger não está ativo (B1 = FALSE). Aguardando próxima verificação.")
-        sys.exit(0)
-    
-    print("Trigger ativo! Iniciando processo de atualização...")
-    
-    if not connect_ssh():
-        print("AVISO: Não foi possível estabelecer conexão SSH.")
-        sys.exit(1)
-
-    try:
-        update_status("Atualizando...")
-        consultar_saldos()
         
-        last_update = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
-        update_status(f"Última atualização: {last_update}")
+        # Cria DataFrame com resultados
+        df_resultados = pd.DataFrame(resultados)
         
-        reset_trigger()
-        print("Atualização concluída com sucesso!")
+        # Garante a ordem das colunas
+        df_resultados = df_resultados[["Account", "transactions_total", "saldo_cents"]]
+        
+        # Atualiza o Google Sheets
+        rodado = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        wks_IUGU_subacc.update_value("A1", f"Última atualização: {rodado}")
+        
+        # Usa as mesmas configurações de exportação do arquivo teste
+        wks_IUGU_subacc.set_dataframe(
+            df_resultados, 
+            (2,1), 
+            encoding='utf-8', 
+            copy_head=True
+        )
+        
+        print("\nProcessamento concluído!")
+        print(f"Total de contas processadas: {len(resultados)}")
+        print(f"Execução concluída: {rodado}")
+        
+        # Não esquecer de resetar o trigger no final
+        reset_trigger(wks_IUGU_subacc)
         
     except Exception as e:
-        print(f"Erro inesperado: {e}")
-        import traceback
-        print(traceback.format_exc())
-        sys.exit(1)
-    finally:
-        close_ssh()
+        print(f"Erro durante a execução: {e}")
+        traceback.print_exc()
+        if 'ssh_client' in locals():
+            ssh_client.close()
 
 if __name__ == "__main__":
-    main()
+    print("Iniciando verificação...")
+    check_all_accounts()
