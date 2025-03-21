@@ -142,6 +142,18 @@ def process_account(args):
         print(f"Erro ao processar conta {account}: {e}")
         return None
 
+def validate_account(ssh_client, token, account):
+    """Valida se a conta está ativa e acessível"""
+    try:
+        response = execute_curl(ssh_client, f"{url_financial}?api_token={token}&limit=1")
+        if response and "transactions_total" in response:
+            print(f"Conta {account} validada com sucesso")
+            return True
+        return False
+    except Exception as e:
+        print(f"Erro ao validar conta {account}: {e}")
+        return False
+
 def check_all_accounts():
     try:
         print("\nIniciando conexão com Google Sheets...")
@@ -162,37 +174,56 @@ def check_all_accounts():
         df_subcontas = pd.DataFrame(wks_subcontas.get_all_records())
         df_subcontas_ativas = df_subcontas[df_subcontas["NOX"] == "SIM"]
 
-        # Cria pool de conexões SSH
+        # Conecta ao SSH para validação
+        ssh_client = connect_ssh()
+        
+        # Valida as contas primeiro
+        contas_validas = []
+        print("\nValidando contas...")
+        for idx, row in df_subcontas_ativas.iterrows():
+            token = row["live_token_full"]
+            account = row["account"]
+            print(f"\nValidando conta {idx + 1}/{len(df_subcontas_ativas)}: {account}")
+            
+            if validate_account(ssh_client, token, account):
+                contas_validas.append((token, account))
+            sleep(1)  # Pequena pausa entre validações
+        
+        ssh_client.close()
+        
+        print(f"\nContas válidas: {len(contas_validas)} de {len(df_subcontas_ativas)}")
+
+        # Cria pool de conexões SSH para processamento paralelo
         ssh_pool = []
-        max_workers = 5  # Número de threads simultâneas
+        max_workers = 3  # Reduzido para 3 workers simultâneos
         for _ in range(max_workers):
             ssh_client = connect_ssh()
             ssh_pool.append(ssh_client)
 
-        # Prepara os argumentos para processamento paralelo
-        args_list = []
-        for idx, row in df_subcontas_ativas.iterrows():
-            ssh_client = ssh_pool[idx % max_workers]  # Distribui as conexões SSH
-            args_list.append((ssh_client, row["live_token_full"], row["account"]))
-
         resultados = []
-        total_contas = len(df_subcontas_ativas)
+        total_contas = len(contas_validas)
         contas_processadas = 0
 
-        # Processa as contas em paralelo
+        # Processa apenas as contas válidas em paralelo
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = []
             
-            # Submete as tarefas em lotes para controle de carga
-            batch_size = 10
-            for i in range(0, len(args_list), batch_size):
-                batch = args_list[i:i + batch_size]
+            # Processa em lotes menores
+            batch_size = 5
+            for i in range(0, len(contas_validas), batch_size):
+                batch = contas_validas[i:i + batch_size]
                 
-                # Submete o lote atual
-                batch_futures = [executor.submit(process_account, args) for args in batch]
+                # Prepara argumentos do lote
+                batch_args = [
+                    (ssh_pool[j % max_workers], token, account)
+                    for j, (token, account) in enumerate(batch)
+                ]
+                
+                # Submete o lote
+                batch_futures = [executor.submit(process_account, args) for args in batch_args]
                 futures.extend(batch_futures)
                 
-                # Aguarda o lote atual completar
+                # Processa resultados do lote
                 for future in concurrent.futures.as_completed(batch_futures):
                     resultado = future.result()
                     if resultado:
@@ -200,17 +231,16 @@ def check_all_accounts():
                         contas_processadas += 1
                         print(f"Progresso: {contas_processadas}/{total_contas}")
                 
-                # Pequena pausa entre lotes
-                if i + batch_size < len(args_list):
-                    print("Pausa entre lotes...")
-                    sleep(5)
+                # Pausa entre lotes
+                if i + batch_size < len(contas_validas):
+                    print("\nPausa entre lotes...")
+                    sleep(3)
 
-        # Cria DataFrame com resultados
+        # Atualiza planilha
         if resultados:
             df_resultados = pd.DataFrame(resultados)
             df_resultados = df_resultados[["Account", "transactions_total", "saldo_cents"]]
             
-            # Atualiza o Google Sheets
             rodado = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             wks_IUGU_subacc.update_value("A1", f"Última atualização: {rodado}")
             
@@ -221,14 +251,15 @@ def check_all_accounts():
                 copy_head=True
             )
 
-        print("\nProcessamento concluído!")
-        print(f"Total de contas processadas: {len(resultados)}")
+        print("\n=== Resumo da Execução ===")
+        print(f"Total de contas NOX: {len(df_subcontas_ativas)}")
+        print(f"Contas válidas: {len(contas_validas)}")
+        print(f"Contas processadas com sucesso: {len(resultados)}")
         print(f"Execução concluída: {rodado}")
         
-        # Reset do trigger
         reset_trigger(wks_IUGU_subacc)
         
-        # Fecha todas as conexões SSH
+        # Fecha conexões SSH
         for ssh_client in ssh_pool:
             ssh_client.close()
 
@@ -236,7 +267,6 @@ def check_all_accounts():
         print(f"Erro durante a execução: {e}")
         import traceback
         print(traceback.format_exc())
-        # Fecha conexões SSH em caso de erro
         if 'ssh_pool' in locals():
             for ssh_client in ssh_pool:
                 try:
