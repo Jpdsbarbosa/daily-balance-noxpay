@@ -76,59 +76,54 @@ def get_account_balance(ssh_client, token, account):
         print(f"Token vazio para conta {account}, pulando...")
         return None
 
-    max_retries = 5  # Número máximo de tentativas
-    retry_delay = 10  # Tempo entre tentativas (segundos)
-    
-    for attempt in range(max_retries):
-        try:
-            if attempt > 0:
-                print(f"Tentativa {attempt + 1}/{max_retries} para conta {account}")
-                sleep(retry_delay)  # Espera entre tentativas
+    try:
+        print(f"Consultando saldo da conta {account}...")
+        command = f'curl -H "Authorization: Basic {token}" https://api.iugu.com/v1/balance'
+        stdin, stdout, stderr = ssh_client.exec_command(command)
+        response = stdout.read().decode()
+        
+        # Tenta parsear a resposta
+        data = json.loads(response)
+        
+        # Verifica se há erro de "Not Found"
+        if "errors" in data and "Not Found" in str(data["errors"]):
+            print(f"Conta {account} não encontrada na IUGU (possivelmente inativa ou removida)")
+            return None
             
-            # Consulta saldo
-            print(f"Consultando saldo da conta {account}...")
-            command = f'curl -H "Authorization: Basic {token}" https://api.iugu.com/v1/balance'
-            stdin, stdout, stderr = ssh_client.exec_command(command)
-            response = stdout.read().decode()
+        # Verifica timeout
+        if "504 Gateway Time-out" in response:
+            print(f"Timeout na consulta da conta {account}")
+            # Aqui podemos tentar novamente após um delay
+            sleep(10)
+            return get_account_balance(ssh_client, token, account)
             
-            if "504 Gateway Time-out" in response:
-                print(f"Timeout na consulta de saldo, tentativa {attempt + 1}")
-                continue  # Tenta novamente
-                
-            data = json.loads(response)
+        if 'total_cents' not in data:
+            print(f"Resposta inválida para saldo: {response}")
+            return None
+        
+        # Se chegou aqui, conseguiu o saldo. Agora busca transações
+        sleep(2)  # Pequena pausa entre as chamadas
+        
+        command_trans = f'curl -H "Authorization: Basic {token}" "https://api.iugu.com/v1/financial_transaction_requests?limit=1"'
+        stdin, stdout, stderr = ssh_client.exec_command(command_trans)
+        trans_response = stdout.read().decode()
+        
+        if "504 Gateway Time-out" in trans_response:
+            print("Timeout ao buscar transações, considerando 0")
+            total_items = 0
+        else:
+            trans_data = json.loads(trans_response)
+            total_items = trans_data.get('total_items', 0)
+        
+        return {
+            "Account": account,
+            "saldo_cents": data['total_cents'] / 100.0,
+            "transactions_total": total_items
+        }
             
-            if 'total_cents' not in data:
-                print(f"Resposta inválida para saldo: {response}")
-                continue  # Tenta novamente
-            
-            # Se chegou aqui, conseguiu o saldo. Agora busca transações
-            sleep(2)  # Pequena pausa entre as chamadas
-            
-            command_trans = f'curl -H "Authorization: Basic {token}" "https://api.iugu.com/v1/financial_transaction_requests?limit=1"'
-            stdin, stdout, stderr = ssh_client.exec_command(command_trans)
-            trans_response = stdout.read().decode()
-            
-            if "504 Gateway Time-out" in trans_response:
-                print("Timeout ao buscar transações, considerando 0")
-                total_items = 0
-            else:
-                trans_data = json.loads(trans_response)
-                total_items = trans_data.get('total_items', 0)
-            
-            # Se chegou até aqui, deu tudo certo
-            return {
-                "Account": account,
-                "saldo_cents": data['total_cents'] / 100.0,
-                "transactions_total": total_items
-            }
-            
-        except Exception as e:
-            print(f"Erro na tentativa {attempt + 1}: {str(e)}")
-            if attempt == max_retries - 1:  # Última tentativa
-                print(f"Todas as tentativas falharam para conta {account}")
-                return None
-    
-    return None  # Retorna None se todas as tentativas falharem
+    except Exception as e:
+        print(f"Erro ao consultar conta {account}: {str(e)}")
+        return None
 
 def check_trigger(wks_IUGU_subacc):
     """Verifica se a célula B1 contém TRUE para executar o script."""
