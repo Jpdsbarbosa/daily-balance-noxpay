@@ -2,7 +2,7 @@ name: Daily Balance NOX Pay
 
 on:
   schedule:
-    - cron: '*/2 * * * *'  # A cada 2 minutos       
+    - cron: '*/6 * * * *'  # A cada 2 minutos       
   workflow_dispatch:      # Permite execução manual
 
 permissions:
