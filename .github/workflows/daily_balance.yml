@@ -29,7 +29,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pygsheets pandas paramiko
+          pip install pygsheets pandas paramiko pytz
 
       - name: Setup Google Credentials
         run: |
