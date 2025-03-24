@@ -17,9 +17,9 @@ url_financial = "https://api.iugu.com/v1/accounts/financial"
 # Lista de contas com muitas transações
 CONTAS_GRANDES = {
     "44B0F69654774D829A00413476711E1C": {"timeout": 180, "retries": 5},  # Conta mais importante
-    "15277CDE747846BB84C2DFCE85DB504B": {"timeout": 120, "retries": 4},
-    "AB3FF5EA035C48A5864F9B0C6DCC2CC4": {"timeout": 120, "retries": 4},
-    "EA67B2F52FC342AB8D91E3293229FE0B": {"timeout": 120, "retries": 4}
+    "15277CDE747846BB84C2DFCE85DB504B": {"timeout": 180, "retries": 5},
+    "AB3FF5EA035C48A5864F9B0C6DCC2CC4": {"timeout": 180, "retries": 5},
+    "EA67B2F52FC342AB8D91E3293229FE0B": {"timeout": 180, "retries": 5}
 }
 
 class RateLimiter:
@@ -67,6 +67,11 @@ def connect_ssh():
 def execute_curl(ssh_client, url, timeout=30, max_retries=2):
     for attempt in range(max_retries):
         try:
+            if "?" in url:
+                url += "&limit=50"
+            else:
+                url += "?limit=50"
+                
             curl_cmd = f'curl -s -m {timeout} "{url}" -H "accept: application/json"'
             print(f"Tentativa {attempt + 1}/{max_retries}: Executando consulta...")
             
@@ -76,7 +81,7 @@ def execute_curl(ssh_client, url, timeout=30, max_retries=2):
             
             if error:
                 print(f"Erro no curl: {error}")
-                sleep(2)
+                sleep(3)
                 continue
                 
             if "error code: 504" in response:
@@ -88,12 +93,12 @@ def execute_curl(ssh_client, url, timeout=30, max_retries=2):
                 return json.loads(response)
             except json.JSONDecodeError:
                 print(f"Erro ao decodificar JSON: {response[:200]}...")
-                sleep(2)
+                sleep(3)
                 continue
                 
         except Exception as e:
             print(f"Erro na tentativa {attempt + 1}: {e}")
-            sleep(2)
+            sleep(3)
             
     return None
 
@@ -104,24 +109,40 @@ def get_account_balance_large(ssh_client, token, account_id):
         timeout = config["timeout"]
         max_retries = config["retries"]
         
-        # Verifica rate limit
-        rate_limiter.wait_if_needed()
-        
-        # Faz apenas UMA chamada com limit=1
-        url = f"{url_financial}?api_token={token}&limit=1"
-        response = execute_curl(ssh_client, url, timeout=timeout, max_retries=max_retries)
-        
-        if response and "transactions" in response:
-            transactions = response.get("transactions", [])
-            if transactions:
-                last_transaction = transactions[0]
-                saldo_cents = float(last_transaction["balance_cents"]) / 100
-                total_transactions = response.get("total_items", 0)
-                return {
-                    "Account": account_id,
-                    "transactions_total": total_transactions,
-                    "saldo_cents": saldo_cents
-                }
+        for attempt in range(max_retries):
+            # Verifica rate limit antes de cada chamada
+            rate_limiter.wait_if_needed()
+            
+            # Primeiro pega o total de transações
+            response = execute_curl(ssh_client, f"{url_financial}?api_token={token}", 
+                                 timeout=timeout, max_retries=max_retries)
+            
+            if response and "transactions_total" in response:
+                total_transactions = response["transactions_total"]
+                
+                # Verifica rate limit antes da segunda chamada
+                rate_limiter.wait_if_needed()
+                
+                # Pega apenas as últimas transações
+                start = max(0, total_transactions - 50)
+                response = execute_curl(ssh_client, 
+                                     f"{url_financial}?api_token={token}&start={start}",
+                                     timeout=timeout, 
+                                     max_retries=max_retries)
+                
+                if response and response.get("transactions"):
+                    last_transaction = response["transactions"][-1]
+                    saldo_cents = float(last_transaction["balance_cents"]) / 100
+                    return {
+                        "Account": account_id,
+                        "transactions_total": total_transactions,
+                        "saldo_cents": saldo_cents
+                    }
+            
+            if attempt < max_retries - 1:
+                print(f"Tentativa {attempt + 1} falhou, aguardando 15 segundos...")
+                sleep(15)
+                
     except Exception as e:
         print(f"Erro ao processar conta grande {account_id}: {e}")
     
