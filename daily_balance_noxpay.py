@@ -180,7 +180,7 @@ def check_all_accounts():
         sh_gateway = gc.open("Gateway")
         wks_subcontas = sh_gateway.worksheet_by_title("Subcontas")
         sh_balance = gc.open("Daily Balance - Nox Pay")
-        wks_IUGU_subacc = sh_balance.worksheet_by_title("IUGU Subcontas")
+        wks_IUGU_subacc = sh_balance.worksheet_by_title("IUGU Subcontas TESTE")
 
         # Verifica o trigger
         print("Verificando trigger...")
