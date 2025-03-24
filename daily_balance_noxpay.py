@@ -14,6 +14,14 @@ SSH_USERNAME = os.getenv('SSH_USERNAME')
 SSH_PASSWORD = os.getenv('SSH_PASSWORD')
 url_financial = "https://api.iugu.com/v1/accounts/financial"
 
+# Lista de contas com muitas transações
+CONTAS_GRANDES = {
+    "44B0F69654774D829A00413476711E1C": {"timeout": 180, "retries": 5},  # Conta mais importante
+    "15277CDE747846BB84C2DFCE85DB504B": {"timeout": 120, "retries": 4},
+    "AB3FF5EA035C48A5864F9B0C6DCC2CC4": {"timeout": 120, "retries": 4},
+    "EA67B2F52FC342AB8D91E3293229FE0B": {"timeout": 120, "retries": 4}
+}
+
 class RateLimiter:
     def __init__(self, max_requests=900, time_window=60):
         self.max_requests = max_requests
@@ -89,6 +97,40 @@ def execute_curl(ssh_client, url, max_retries=2):
             
     return None
 
+def execute_curl_large(ssh_client, url, timeout=180, max_retries=5):
+    """Versão específica para contas grandes com mais timeout e retries"""
+    for attempt in range(max_retries):
+        try:
+            curl_cmd = f'curl -s -m {timeout} "{url}" -H "accept: application/json"'
+            print(f"Tentativa {attempt + 1}/{max_retries}: Executando consulta (timeout: {timeout}s)...")
+            
+            stdin, stdout, stderr = ssh_client.exec_command(curl_cmd, timeout=timeout)
+            error = stderr.read().decode('utf-8')
+            response = stdout.read().decode('utf-8')
+            
+            if error:
+                print(f"Erro no curl: {error}")
+                sleep(5)  # Pausa maior para contas grandes
+                continue
+                
+            if "error code: 504" in response:
+                print("Erro 504 detectado, aguardando...")
+                sleep(10)  # Pausa maior para 504
+                continue
+                
+            try:
+                return json.loads(response)
+            except json.JSONDecodeError:
+                print(f"Erro ao decodificar JSON: {response[:200]}...")
+                sleep(5)
+                continue
+                
+        except Exception as e:
+            print(f"Erro na tentativa {attempt + 1}: {e}")
+            sleep(5)
+            
+    return None
+
 def get_account_balance(ssh_client, token, account_id):
     try:
         max_retries = 2  # Reduzido de 3 para 2
@@ -131,6 +173,42 @@ def get_account_balance(ssh_client, token, account_id):
         "transactions_total": 0,
         "saldo_cents": 0
     }
+
+def get_account_balance_large(ssh_client, token, account_id):
+    """Função específica para contas com muitas transações"""
+    try:
+        config = CONTAS_GRANDES[account_id]
+        max_retries = config["retries"]
+        timeout = config["timeout"]
+        
+        for attempt in range(max_retries):
+            # Verifica rate limit antes de cada chamada
+            rate_limiter.wait_if_needed()
+            
+            # Para contas grandes, vamos direto pegar as últimas transações
+            url = f"{url_financial}?api_token={token}&limit=1"
+            response = execute_curl_large(ssh_client, url, timeout=timeout, max_retries=max_retries)
+            
+            if response and "transactions" in response:
+                transactions = response.get("transactions", [])
+                if transactions:
+                    last_transaction = transactions[0]
+                    saldo_cents = float(last_transaction["balance_cents"]) / 100
+                    total_transactions = response.get("total_items", 0)
+                    return {
+                        "Account": account_id,
+                        "transactions_total": total_transactions,
+                        "saldo_cents": saldo_cents
+                    }
+            
+            if attempt < max_retries - 1:
+                print(f"Tentativa {attempt + 1} falhou, aguardando 15 segundos...")
+                sleep(15)
+                
+    except Exception as e:
+        print(f"Erro ao processar conta grande {account_id}: {e}")
+    
+    return None
 
 def check_trigger(wks_IUGU_subacc):
     """Verifica se a célula B1 contém TRUE para executar o script."""
@@ -183,15 +261,37 @@ def check_all_accounts():
         # Conecta ao SSH
         ssh_client = connect_ssh()
         
-        # Lista para armazenar resultados
+        # Separa contas grandes das normais
+        contas_grandes = df_subcontas_ativas[df_subcontas_ativas["account"].isin(CONTAS_GRANDES.keys())]
+        contas_normais = df_subcontas_ativas[~df_subcontas_ativas["account"].isin(CONTAS_GRANDES.keys())]
+        
         resultados = []
         
-        # Processa contas em lotes pequenos
+        # Processa primeiro as contas grandes
+        print("\nProcessando contas com muitas transações...")
+        for _, row in contas_grandes.iterrows():
+            token = row["live_token_full"]
+            account = row["account"]
+            
+            print(f"\nAccount (grande): {account}")
+            resultado = get_account_balance_large(ssh_client, token, account)
+            
+            if resultado:
+                resultados.append(resultado)
+                print(f"Resultado:")
+                print(f"- Saldo: R$ {resultado['saldo_cents']:,.2f}")
+                print(f"- Total transações: {resultado['transactions_total']}")
+            else:
+                print(f"Conta {account} não retornou dados válidos")
+            
+            sleep(5)  # Pausa maior entre contas grandes
+        
+        # Processa contas normais em lotes
         batch_size = 3
-        total_contas = len(df_subcontas_ativas)
+        total_contas = len(contas_normais)
         
         for i in range(0, total_contas, batch_size):
-            batch = df_subcontas_ativas.iloc[i:i+batch_size]
+            batch = contas_normais.iloc[i:i+batch_size]
             print(f"\nProcessando lote {i//batch_size + 1}/{-(-total_contas//batch_size)}")
             
             for _, row in batch.iterrows():
@@ -201,7 +301,7 @@ def check_all_accounts():
                 print(f"Account: {account}")
                 resultado = get_account_balance(ssh_client, token, account)
                 
-                if resultado:  # Só adiciona se tiver resultado válido
+                if resultado:
                     resultados.append(resultado)
                     print(f"Resultado:")
                     print(f"- Saldo: R$ {resultado['saldo_cents']:,.2f}")
@@ -209,7 +309,6 @@ def check_all_accounts():
                 else:
                     print(f"Conta {account} não retornou dados válidos")
             
-            # Pequena pausa entre lotes
             if i + batch_size < total_contas:
                 sleep(1)
         
