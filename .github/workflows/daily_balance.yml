@@ -14,6 +14,10 @@ concurrency:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
 jobs:
   run-balance-check:
     runs-on: ubuntu-latest
@@ -30,7 +34,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pygsheets pandas paramiko
+          pip install pygsheets pandas paramiko pytz
 
       - name: Setup Google Credentials
         run: |
@@ -38,11 +42,12 @@ jobs:
 
       - name: Run balance check
         run: |
+          set -x  # Mostra os comandos sendo executados
           echo "=== Iniciando execução em $(date) ==="
-          python -u daily_balance_noxpay.py
+          python -u daily_balance_noxpay.py  # Flag -u força output sem buffer
           echo "=== Finalizado em $(date) ==="
         env:
           SSH_HOST: ${{ secrets.SSH_HOST }}
           SSH_PORT: ${{ secrets.SSH_PORT }}
           SSH_USERNAME: ${{ secrets.SSH_USERNAME }}
-          SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }} 
+          SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
