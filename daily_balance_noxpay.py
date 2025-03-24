@@ -67,11 +67,6 @@ def connect_ssh():
 def execute_curl(ssh_client, url, timeout=30, max_retries=2):
     for attempt in range(max_retries):
         try:
-            if "?" in url:
-                url += "&limit=50"
-            else:
-                url += "?limit=50"
-                
             curl_cmd = f'curl -s -m {timeout} "{url}" -H "accept: application/json"'
             print(f"Tentativa {attempt + 1}/{max_retries}: Executando consulta...")
             
@@ -109,40 +104,22 @@ def get_account_balance_large(ssh_client, token, account_id):
         timeout = config["timeout"]
         max_retries = config["retries"]
         
-        for attempt in range(max_retries):
-            # Verifica rate limit antes de cada chamada
-            rate_limiter.wait_if_needed()
-            
-            # Primeiro pega o total de transações
-            response = execute_curl(ssh_client, f"{url_financial}?api_token={token}", 
-                                 timeout=timeout, max_retries=max_retries)
-            
-            if response and "transactions_total" in response:
-                total_transactions = response["transactions_total"]
-                
-                # Verifica rate limit antes da segunda chamada
-                rate_limiter.wait_if_needed()
-                
-                # Pega apenas as últimas transações
-                start = max(0, total_transactions - 50)
-                response = execute_curl(ssh_client, 
-                                     f"{url_financial}?api_token={token}&start={start}",
-                                     timeout=timeout, 
-                                     max_retries=max_retries)
-                
-                if response and response.get("transactions"):
-                    last_transaction = response["transactions"][-1]
-                    saldo_cents = float(last_transaction["balance_cents"]) / 100
-                    return {
-                        "Account": account_id,
-                        "transactions_total": total_transactions,
-                        "saldo_cents": saldo_cents
-                    }
-            
-            if attempt < max_retries - 1:
-                print(f"Tentativa {attempt + 1} falhou, aguardando 15 segundos...")
-                sleep(15)
-                
+        # Verifica rate limit
+        rate_limiter.wait_if_needed()
+        
+        # Faz apenas UMA chamada, ordenando por data de criação decrescente
+        url = f"{url_financial}?api_token={token}&limit=1&sort=-created_at"
+        response = execute_curl(ssh_client, url, timeout=timeout, max_retries=max_retries)
+        
+        if response and response.get("transactions"):
+            last_transaction = response["transactions"][0]  # Pega a primeira (mais recente)
+            saldo_cents = float(last_transaction["balance_cents"]) / 100
+            total_transactions = response.get("total_items", 0)
+            return {
+                "Account": account_id,
+                "transactions_total": total_transactions,
+                "saldo_cents": saldo_cents
+            }
     except Exception as e:
         print(f"Erro ao processar conta grande {account_id}: {e}")
     
@@ -151,37 +128,22 @@ def get_account_balance_large(ssh_client, token, account_id):
 def get_account_balance(ssh_client, token, account_id):
     """Função para contas normais"""
     try:
-        max_retries = 2
-        for attempt in range(max_retries):
-            # Verifica rate limit
-            rate_limiter.wait_if_needed()
-            
-            # Primeiro pega o total de transações
-            response = execute_curl(ssh_client, f"{url_financial}?api_token={token}")
-            
-            if response and "transactions_total" in response:
-                total_transactions = response["transactions_total"]
-                
-                # Verifica rate limit antes da segunda chamada
-                rate_limiter.wait_if_needed()
-                
-                # Pega apenas as últimas transações
-                start = max(0, total_transactions - 50)
-                response = execute_curl(ssh_client, f"{url_financial}?api_token={token}&start={start}")
-                
-                if response and response.get("transactions"):
-                    last_transaction = response["transactions"][-1]
-                    saldo_cents = float(last_transaction["balance_cents"]) / 100
-                    return {
-                        "Account": account_id,
-                        "transactions_total": total_transactions,
-                        "saldo_cents": saldo_cents
-                    }
-            
-            if attempt < max_retries - 1:
-                print(f"Tentativa {attempt + 1} falhou, aguardando 5 segundos...")
-                sleep(5)
-                
+        # Verifica rate limit
+        rate_limiter.wait_if_needed()
+        
+        # Faz apenas UMA chamada, ordenando por data de criação decrescente
+        url = f"{url_financial}?api_token={token}&limit=1&sort=-created_at"
+        response = execute_curl(ssh_client, url)
+        
+        if response and response.get("transactions"):
+            last_transaction = response["transactions"][0]  # Pega a primeira (mais recente)
+            saldo_cents = float(last_transaction["balance_cents"]) / 100
+            total_transactions = response.get("total_items", 0)
+            return {
+                "Account": account_id,
+                "transactions_total": total_transactions,
+                "saldo_cents": saldo_cents
+            }
     except Exception as e:
         print(f"Erro ao processar conta {account_id}: {e}")
     
@@ -218,7 +180,7 @@ def check_all_accounts():
         sh_gateway = gc.open("Gateway")
         wks_subcontas = sh_gateway.worksheet_by_title("Subcontas")
         sh_balance = gc.open("Daily Balance - Nox Pay")
-        wks_IUGU_subacc = sh_balance.worksheet_by_title("IUGU Subcontas TESTE")
+        wks_IUGU_subacc = sh_balance.worksheet_by_title("IUGU Subcontas")
 
         # Verifica o trigger
         print("Verificando trigger...")
@@ -262,7 +224,7 @@ def check_all_accounts():
             else:
                 print(f"Conta {account} não retornou dados válidos")
             
-            sleep(5)  # Pausa maior entre contas grandes
+            sleep(3)  # Pausa entre contas grandes
         
         # Processa contas normais em lotes
         batch_size = 3
