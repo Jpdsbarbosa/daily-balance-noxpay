@@ -17,13 +17,25 @@ url_financial = "https://api.iugu.com/v1/accounts/financial"
 # Lista de contas com muitas transações
 CONTAS_GRANDES = {
     "44B0F69654774D829A00413476711E1C": {
-        "timeout": 300,  # 5 minutos
+        "timeout": 300,
         "retries": 5,
-        "batch_size": 1000  # Buscar em lotes de 1000
+        "batch_size": 1000
     },
-    "15277CDE747846BB84C2DFCE85DB504B": {"timeout": 180, "retries": 5},
-    "AB3FF5EA035C48A5864F9B0C6DCC2CC4": {"timeout": 180, "retries": 5},
-    "EA67B2F52FC342AB8D91E3293229FE0B": {"timeout": 180, "retries": 5}
+    "15277CDE747846BB84C2DFCE85DB504B": {
+        "timeout": 300,
+        "retries": 5,
+        "batch_size": 1000
+    },
+    "AB3FF5EA035C48A5864F9B0C6DCC2CC4": {
+        "timeout": 300,
+        "retries": 5,
+        "batch_size": 1000
+    },
+    "EA67B2F52FC342AB8D91E3293229FE0B": {
+        "timeout": 300,
+        "retries": 5,
+        "batch_size": 1000
+    }
 }
 
 class RateLimiter:
@@ -54,18 +66,18 @@ rate_limiter = RateLimiter()
 
 def connect_ssh():
     print("Conectando ao servidor SSH...")
-    ssh_client = paramiko.SSHClient()
-    ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    ssh_client.connect(
-        hostname=SSH_HOST,
-        port=SSH_PORT,
-        username=SSH_USERNAME,
-        password=SSH_PASSWORD,
-        allow_agent=False,
+        ssh_client = paramiko.SSHClient()
+        ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        ssh_client.connect(
+            hostname=SSH_HOST, 
+            port=SSH_PORT, 
+            username=SSH_USERNAME, 
+            password=SSH_PASSWORD,
+            allow_agent=False,
         look_for_keys=False,
         timeout=120
-    )
-    print("Conexão SSH estabelecida com sucesso.")
+        )
+        print("Conexão SSH estabelecida com sucesso.")
     return ssh_client
 
 def execute_curl(ssh_client, url, timeout=30):
@@ -83,9 +95,9 @@ def execute_curl(ssh_client, url, timeout=30):
             
             stdin, stdout, stderr = ssh_client.exec_command(curl_cmd, timeout=timeout)
             error = stderr.read().decode('utf-8')
-            response = stdout.read().decode('utf-8')
-            
-            if error:
+        response = stdout.read().decode('utf-8')
+        
+        if error:
                 print(f"Erro no curl: {error}")
                 sleep(5)
                 continue
@@ -94,9 +106,9 @@ def execute_curl(ssh_client, url, timeout=30):
                 print("Erro 504 detectado, aguardando...")
                 sleep(10)
                 continue
-                
-            try:
-                return json.loads(response)
+            
+        try:
+            return json.loads(response)
             except json.JSONDecodeError:
                 print(f"Erro ao decodificar JSON: {response[:200]}...")
                 sleep(5)
@@ -110,10 +122,15 @@ def execute_curl(ssh_client, url, timeout=30):
 
 def get_account_balance_large(ssh_client, token, account_id):
     """Função específica para contas com muitas transações"""
-    config = CONTAS_GRANDES[account_id]
-    timeout = config["timeout"]
-    max_retries = config["retries"]
-    batch_size = config["batch_size"]
+    config = CONTAS_GRANDES.get(account_id, {
+        "timeout": 300,
+        "retries": 5,
+        "batch_size": 1000
+    })
+    
+    timeout = config.get("timeout", 300)
+    max_retries = config.get("retries", 5)
+    batch_size = config.get("batch_size", 1000)
 
     print(f"\nProcessando conta grande: {account_id}")
     
@@ -153,7 +170,7 @@ def get_account_balance_large(ssh_client, token, account_id):
     except Exception as e:
         print(f"Erro ao processar conta grande {account_id}: {e}")
     
-    return None
+        return None
 
 def get_account_balance(ssh_client, token, account_id):
     # Se for uma conta grande, usa função específica
@@ -208,7 +225,7 @@ def get_account_balance(ssh_client, token, account_id):
                 print(f"Tentativa {attempt + 1} falhou, aguardando {wait_time} segundos...")
                 sleep(wait_time)
                 
-    except Exception as e:
+except Exception as e:
         print(f"Erro ao processar conta {account_id}: {e}")
     
     print(f"Não foi possível obter saldo para a conta {account_id}")
@@ -261,10 +278,10 @@ def check_all_accounts():
         update_status(wks_IUGU_subacc, "Atualizando...")
 
         # Lê as subcontas do Google Sheets
-        df_subcontas = pd.DataFrame(wks_subcontas.get_all_records())
-        
+    df_subcontas = pd.DataFrame(wks_subcontas.get_all_records())
+
         # Filtra apenas subcontas ativas
-        df_subcontas_ativas = df_subcontas[df_subcontas["NOX"] == "SIM"]
+    df_subcontas_ativas = df_subcontas[df_subcontas["NOX"] == "SIM"]
 
         # Conecta ao SSH
         ssh_client = connect_ssh()
@@ -281,7 +298,7 @@ def check_all_accounts():
         for _, row in contas_grandes.iterrows():
             token = row["live_token_full"]
             account = row["account"]
-            
+
             print(f"\nAccount (grande): {account}")
             resultado = get_account_balance(ssh_client, token, account)
             
@@ -329,9 +346,9 @@ def check_all_accounts():
             df_resultados = df_resultados[["Account", "transactions_total", "saldo_cents"]]
             
             # Atualiza o Google Sheets
-            rodado = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            wks_IUGU_subacc.update_value("A1", f"Última atualização: {rodado}")
-            
+    rodado = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    wks_IUGU_subacc.update_value("A1", f"Última atualização: {rodado}")
+
             # Exporta para o Google Sheets
             wks_IUGU_subacc.set_dataframe(
                 df_resultados, 
@@ -342,7 +359,7 @@ def check_all_accounts():
             
             print("\nProcessamento concluído!")
             print(f"Total de contas processadas: {len(resultados)}")
-            print(f"Execução concluída: {rodado}")
+    print(f"Execução concluída: {rodado}")
         else:
             print("\nNenhum resultado válido foi obtido!")
             wks_IUGU_subacc.update_value("A1", "Erro: Nenhum resultado válido obtido")
@@ -351,11 +368,11 @@ def check_all_accounts():
         reset_trigger(wks_IUGU_subacc)
         
         ssh_client.close()
-        
-    except Exception as e:
+
+            except Exception as e:
         print(f"Erro durante a execução: {e}")
-        import traceback
-        print(traceback.format_exc())
+                import traceback
+                print(traceback.format_exc())
         if 'ssh_client' in locals():
             ssh_client.close()
 
