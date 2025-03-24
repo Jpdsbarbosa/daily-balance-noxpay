@@ -66,18 +66,18 @@ rate_limiter = RateLimiter()
 
 def connect_ssh():
     print("Conectando ao servidor SSH...")
-        ssh_client = paramiko.SSHClient()
-        ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        ssh_client.connect(
-            hostname=SSH_HOST, 
-            port=SSH_PORT, 
-            username=SSH_USERNAME, 
-            password=SSH_PASSWORD,
-            allow_agent=False,
+    ssh_client = paramiko.SSHClient()
+    ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    ssh_client.connect(
+        hostname=SSH_HOST, 
+        port=SSH_PORT, 
+        username=SSH_USERNAME, 
+        password=SSH_PASSWORD,
+        allow_agent=False,
         look_for_keys=False,
         timeout=120
-        )
-        print("Conexão SSH estabelecida com sucesso.")
+    )
+    print("Conexão SSH estabelecida com sucesso.")
     return ssh_client
 
 def execute_curl(ssh_client, url, timeout=30):
@@ -95,9 +95,9 @@ def execute_curl(ssh_client, url, timeout=30):
             
             stdin, stdout, stderr = ssh_client.exec_command(curl_cmd, timeout=timeout)
             error = stderr.read().decode('utf-8')
-        response = stdout.read().decode('utf-8')
-        
-        if error:
+            response = stdout.read().decode('utf-8')
+            
+            if error:
                 print(f"Erro no curl: {error}")
                 sleep(5)
                 continue
@@ -107,8 +107,8 @@ def execute_curl(ssh_client, url, timeout=30):
                 sleep(10)
                 continue
             
-        try:
-            return json.loads(response)
+            try:
+                return json.loads(response)
             except json.JSONDecodeError:
                 print(f"Erro ao decodificar JSON: {response[:200]}...")
                 sleep(5)
@@ -225,7 +225,7 @@ def get_account_balance(ssh_client, token, account_id):
                 print(f"Tentativa {attempt + 1} falhou, aguardando {wait_time} segundos...")
                 sleep(wait_time)
                 
-except Exception as e:
+    except Exception as e:
         print(f"Erro ao processar conta {account_id}: {e}")
     
     print(f"Não foi possível obter saldo para a conta {account_id}")
@@ -278,10 +278,10 @@ def check_all_accounts():
         update_status(wks_IUGU_subacc, "Atualizando...")
 
         # Lê as subcontas do Google Sheets
-    df_subcontas = pd.DataFrame(wks_subcontas.get_all_records())
+        df_subcontas = pd.DataFrame(wks_subcontas.get_all_records())
 
         # Filtra apenas subcontas ativas
-    df_subcontas_ativas = df_subcontas[df_subcontas["NOX"] == "SIM"]
+        df_subcontas_ativas = df_subcontas[df_subcontas["NOX"] == "SIM"]
 
         # Conecta ao SSH
         ssh_client = connect_ssh()
@@ -346,8 +346,8 @@ def check_all_accounts():
             df_resultados = df_resultados[["Account", "transactions_total", "saldo_cents"]]
             
             # Atualiza o Google Sheets
-    rodado = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    wks_IUGU_subacc.update_value("A1", f"Última atualização: {rodado}")
+            rodado = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            wks_IUGU_subacc.update_value("A1", f"Última atualização: {rodado}")
 
             # Exporta para o Google Sheets
             wks_IUGU_subacc.set_dataframe(
@@ -359,7 +359,7 @@ def check_all_accounts():
             
             print("\nProcessamento concluído!")
             print(f"Total de contas processadas: {len(resultados)}")
-    print(f"Execução concluída: {rodado}")
+            print(f"Execução concluída: {rodado}")
         else:
             print("\nNenhum resultado válido foi obtido!")
             wks_IUGU_subacc.update_value("A1", "Erro: Nenhum resultado válido obtido")
@@ -369,10 +369,10 @@ def check_all_accounts():
         
         ssh_client.close()
 
-            except Exception as e:
+    except Exception as e:
         print(f"Erro durante a execução: {e}")
-                import traceback
-                print(traceback.format_exc())
+        import traceback
+        print(traceback.format_exc())
         if 'ssh_client' in locals():
             ssh_client.close()
 
