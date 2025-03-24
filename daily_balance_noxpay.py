@@ -2,9 +2,10 @@ import paramiko
 import json
 from time import sleep
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta
 import pygsheets
 import os
+from threading import Lock
 
 # Configurações via variáveis de ambiente
 SSH_HOST = os.getenv('SSH_HOST')
@@ -12,6 +13,33 @@ SSH_PORT = int(os.getenv('SSH_PORT', "22"))
 SSH_USERNAME = os.getenv('SSH_USERNAME')
 SSH_PASSWORD = os.getenv('SSH_PASSWORD')
 url_financial = "https://api.iugu.com/v1/accounts/financial"
+
+class RateLimiter:
+    def __init__(self, max_requests=900, time_window=60):  # 900 para ter margem de segurança
+        self.max_requests = max_requests
+        self.time_window = time_window
+        self.requests = []
+        self.lock = Lock()
+
+    def wait_if_needed(self):
+        with self.lock:
+            now = datetime.now()
+            # Remove requisições antigas
+            self.requests = [req_time for req_time in self.requests 
+                           if now - req_time < timedelta(seconds=self.time_window)]
+            
+            if len(self.requests) >= self.max_requests:
+                oldest = min(self.requests)
+                sleep_time = (oldest + timedelta(seconds=self.time_window) - now).total_seconds()
+                if sleep_time > 0:
+                    print(f"Rate limit IUGU atingido. Aguardando {sleep_time:.2f} segundos...")
+                    sleep(sleep_time)
+                self.requests = []
+            
+            self.requests.append(now)
+
+# Instância global do rate limiter
+rate_limiter = RateLimiter()
 
 def connect_ssh():
     print("Conectando ao servidor SSH...")
