@@ -122,15 +122,10 @@ def execute_curl(ssh_client, url, timeout=30):
 
 def get_account_balance_large(ssh_client, token, account_id):
     """Função específica para contas com muitas transações"""
-    config = CONTAS_GRANDES.get(account_id, {
-        "timeout": 300,
-        "retries": 5,
-        "batch_size": 1000
-    })
-    
-    timeout = config.get("timeout", 300)
-    max_retries = config.get("retries", 5)
-    batch_size = config.get("batch_size", 1000)
+    config = CONTAS_GRANDES[account_id]  # Pega configuração específica da conta
+    timeout = config["timeout"]
+    max_retries = config["retries"]
+    batch_size = config["batch_size"]
 
     print(f"\nProcessando conta grande: {account_id}")
     
@@ -144,18 +139,18 @@ def get_account_balance_large(ssh_client, token, account_id):
         total_transactions = response["transactions_total"]
         print(f"Total de transações: {total_transactions}")
 
-        # Calcula o último lote
-        last_batch_start = (total_transactions // batch_size) * batch_size
+        # Para contas muito grandes, vamos direto para o final
+        start = total_transactions - 1 if total_transactions > 0 else 0
         
-        # Tenta pegar o último lote
+        # Tenta pegar a última transação
         for attempt in range(max_retries):
-            url = f"{url_financial}?api_token={token}&start={last_batch_start}&limit={batch_size}"
-            print(f"Tentando pegar último lote a partir de {last_batch_start}")
+            url = f"{url_financial}?api_token={token}&start={start}&limit=1"
+            print(f"Tentando pegar última transação (posição {start})")
             
             response = execute_curl(ssh_client, url, timeout=timeout)
             
             if response and response.get("transactions"):
-                last_transaction = response["transactions"][-1]
+                last_transaction = response["transactions"][0]  # Pegamos apenas a última
                 saldo_cents = float(last_transaction["balance_cents"]) / 100
                 print(f"Saldo encontrado: R$ {saldo_cents:,.2f}")
                 return {
@@ -169,7 +164,6 @@ def get_account_balance_large(ssh_client, token, account_id):
     
     except Exception as e:
         print(f"Erro ao processar conta grande {account_id}: {e}")
-    
         return None
 
 def get_account_balance(ssh_client, token, account_id):
@@ -291,7 +285,7 @@ def check_all_accounts():
             account = row["account"]
 
             print(f"\nAccount (grande): {account}")
-            resultado = get_account_balance(ssh_client, token, account)
+            resultado = get_account_balance_large(ssh_client, token, account)
             
             if resultado:
                 resultados.append(resultado)
@@ -300,6 +294,12 @@ def check_all_accounts():
                 print(f"- Total transações: {resultado['transactions_total']}")
             else:
                 print(f"Conta {account} não retornou dados válidos")
+                resultado = get_account_balance(ssh_client, token, account)
+                if resultado:
+                    resultados.append(resultado)
+                    print(f"Resultado (método alternativo):")
+                    print(f"- Saldo: R$ {resultado['saldo_cents']:,.2f}")
+                    print(f"- Total transações: {resultado['transactions_total']}")
             
             sleep(3)  # Pausa entre contas grandes
         
