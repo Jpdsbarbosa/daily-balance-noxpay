@@ -15,7 +15,7 @@ SSH_PASSWORD = os.getenv('SSH_PASSWORD')
 url_financial = "https://api.iugu.com/v1/accounts/financial"
 
 class RateLimiter:
-    def __init__(self, max_requests=900, time_window=60):  # 900 para ter margem de segurança
+    def __init__(self, max_requests=900, time_window=60):
         self.max_requests = max_requests
         self.time_window = time_window
         self.requests = []
@@ -24,7 +24,6 @@ class RateLimiter:
     def wait_if_needed(self):
         with self.lock:
             now = datetime.now()
-            # Remove requisições antigas
             self.requests = [req_time for req_time in self.requests 
                            if now - req_time < timedelta(seconds=self.time_window)]
             
@@ -92,28 +91,46 @@ def execute_curl(ssh_client, url, max_retries=2):
 
 def get_account_balance(ssh_client, token, account_id):
     try:
-        # Verifica rate limit
-        rate_limiter.wait_if_needed()
-        
-        # Faz apenas UMA chamada com limit=1 para pegar o último saldo
-        url = f"{url_financial}?api_token={token}&limit=1"
-        response = execute_curl(ssh_client, url)
-        
-        if response and "transactions" in response:
-            transactions = response.get("transactions", [])
-            if transactions:
-                last_transaction = transactions[0]
-                saldo_cents = float(last_transaction["balance_cents"]) / 100
-                total_transactions = response.get("total_items", 0)
-                return {
-                    "Account": account_id,
-                    "transactions_total": total_transactions,
-                    "saldo_cents": saldo_cents
-                }
+        max_retries = 2  # Reduzido de 3 para 2
+        for attempt in range(max_retries):
+            # Verifica rate limit antes de cada chamada
+            rate_limiter.wait_if_needed()
+            
+            # Primeiro pega o total de transações
+            response = execute_curl(ssh_client, f"{url_financial}?api_token={token}")
+            
+            if response and "transactions_total" in response:
+                total_transactions = response["transactions_total"]
+                
+                # Verifica rate limit antes da segunda chamada
+                rate_limiter.wait_if_needed()
+                
+                # Pega apenas as últimas transações
+                start = max(0, total_transactions - 50)
+                response = execute_curl(ssh_client, f"{url_financial}?api_token={token}&start={start}")
+                
+                if response and response.get("transactions"):
+                    last_transaction = response["transactions"][-1]
+                    saldo_cents = float(last_transaction["balance_cents"]) / 100
+                    return {
+                        "Account": account_id,
+                        "transactions_total": total_transactions,
+                        "saldo_cents": saldo_cents
+                    }
+            
+            if attempt < max_retries - 1:
+                print(f"Tentativa {attempt + 1} falhou, aguardando 5 segundos...")  # Reduzido de 30 para 5
+                sleep(5)
+                
     except Exception as e:
         print(f"Erro ao processar conta {account_id}: {e}")
     
-    return None
+    print(f"Não foi possível obter saldo para a conta {account_id}")
+    return {
+        "Account": account_id,
+        "transactions_total": 0,
+        "saldo_cents": 0
+    }
 
 def check_trigger(wks_IUGU_subacc):
     """Verifica se a célula B1 contém TRUE para executar o script."""
