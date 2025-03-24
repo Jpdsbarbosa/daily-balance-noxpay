@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 import pygsheets
 import os
 from threading import Lock
+import pytz
 
 # Configurações via variáveis de ambiente
 SSH_HOST = os.getenv('SSH_HOST')
@@ -251,7 +252,7 @@ def check_all_accounts():
         sh_gateway = gc.open("Gateway")
         wks_subcontas = sh_gateway.worksheet_by_title("Subcontas")
         sh_balance = gc.open("Daily Balance - Nox Pay")
-        wks_IUGU_subacc = sh_balance.worksheet_by_title("IUGU Subcontas TESTE")
+        wks_IUGU_subacc = sh_balance.worksheet_by_title("IUGU Subcontas")
 
         # Verifica o trigger
         print("Verificando trigger...")
@@ -337,7 +338,8 @@ def check_all_accounts():
             df_resultados = df_resultados[["Account", "transactions_total", "saldo_cents"]]
             
             # Atualiza o Google Sheets
-            rodado = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            tz_br = pytz.timezone('America/Sao_Paulo')
+            rodado = datetime.now(pytz.UTC).astimezone(tz_br).strftime("%Y-%m-%d %H:%M:%S")
             wks_IUGU_subacc.update_value("A1", f"Última atualização: {rodado}")
 
             # Exporta para o Google Sheets
