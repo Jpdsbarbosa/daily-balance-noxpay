@@ -2,11 +2,9 @@ import paramiko
 import json
 from time import sleep
 import pandas as pd
-from datetime import datetime, timedelta
+from datetime import datetime
 import pygsheets
 import os
-from threading import Lock
-import time
 
 # Configurações via variáveis de ambiente
 SSH_HOST = os.getenv('SSH_HOST')
@@ -14,33 +12,6 @@ SSH_PORT = int(os.getenv('SSH_PORT', "22"))
 SSH_USERNAME = os.getenv('SSH_USERNAME')
 SSH_PASSWORD = os.getenv('SSH_PASSWORD')
 url_financial = "https://api.iugu.com/v1/accounts/financial"
-
-class RateLimiter:
-    def __init__(self, max_requests=900, time_window=60):  # 900 para ter margem de segurança
-        self.max_requests = max_requests
-        self.time_window = time_window
-        self.requests = []
-        self.lock = Lock()
-
-    def wait_if_needed(self):
-        with self.lock:
-            now = datetime.now()
-            # Remove requisições antigas
-            self.requests = [req_time for req_time in self.requests 
-                           if now - req_time < timedelta(seconds=self.time_window)]
-            
-            if len(self.requests) >= self.max_requests:
-                oldest = min(self.requests)
-                sleep_time = (oldest + timedelta(seconds=self.time_window) - now).total_seconds()
-                if sleep_time > 0:
-                    print(f"Rate limit IUGU atingido. Aguardando {sleep_time:.2f} segundos...")
-                    time.sleep(sleep_time)
-                self.requests = []
-            
-            self.requests.append(now)
-
-# Instância global do rate limiter
-rate_limiter = RateLimiter()
 
 def connect_ssh():
     print("Conectando ao servidor SSH...")
@@ -58,12 +29,18 @@ def connect_ssh():
     print("Conexão SSH estabelecida com sucesso.")
     return ssh_client
 
-def execute_curl(ssh_client, url, max_retries=2):
+def execute_curl(ssh_client, url, max_retries=5):
     for attempt in range(max_retries):
         try:
-            curl_cmd = f'curl -s -m 30 "{url}" -H "accept: application/json"'
+            if "?" in url:
+                url += "&limit=50"
+            else:
+                url += "?limit=50"
+                
+            curl_cmd = f'curl -s -m 180 "{url}" -H "accept: application/json"'
+            print(f"Tentativa {attempt + 1}/{max_retries}: Executando consulta...")
             
-            stdin, stdout, stderr = ssh_client.exec_command(curl_cmd, timeout=30)
+            stdin, stdout, stderr = ssh_client.exec_command(curl_cmd, timeout=180)
             error = stderr.read().decode('utf-8')
             response = stdout.read().decode('utf-8')
             
@@ -72,42 +49,59 @@ def execute_curl(ssh_client, url, max_retries=2):
                 sleep(5)
                 continue
                 
+            if "error code: 504" in response:
+                print("Erro 504 detectado, aguardando antes de tentar novamente...")
+                sleep(5)
+                continue
+                
             try:
                 return json.loads(response)
             except json.JSONDecodeError:
-                print(f"Erro ao decodificar JSON: {response[:200]}...")
-                sleep(5)
+                print(f"Erro ao decodificar JSON. Resposta: {response[:200]}...")
+                sleep(10)
                 continue
                 
         except Exception as e:
             print(f"Erro na tentativa {attempt + 1}: {e}")
-            sleep(5)
+            sleep(10)
             
+        if attempt < max_retries - 1:
+            print("Tentando novamente após erro...")
+            
+    print(f"Todas as {max_retries} tentativas falharam para a URL: {url}")
     return None
 
 def get_account_balance(ssh_client, token, account_id):
     try:
-        # Verifica rate limit
-        rate_limiter.wait_if_needed()
-        
-        # Faz apenas UMA chamada com limit=1 para pegar a última transação
-        url = f"{url_financial}?api_token={token}&limit=1"
-        response = execute_curl(ssh_client, url)
-        
-        if response and "transactions" in response:
-            transactions = response.get("transactions", [])
-            if transactions:
-                last_transaction = transactions[0]  # Pega a primeira (mais recente)
-                saldo_cents = float(last_transaction["balance_cents"]) / 100
-                total_transactions = response.get("total_items", 0)
-                return {
-                    "Account": account_id,
-                    "transactions_total": total_transactions,
-                    "saldo_cents": saldo_cents
-                }
+        max_retries = 3
+        for attempt in range(max_retries):
+            # Primeiro pega o total de transações
+            response = execute_curl(ssh_client, f"{url_financial}?api_token={token}")
+            
+            if response and "transactions_total" in response:
+                total_transactions = response["transactions_total"]
+                
+                # Pega apenas as últimas transações
+                start = max(0, total_transactions - 50)
+                response = execute_curl(ssh_client, f"{url_financial}?api_token={token}&start={start}")
+                
+                if response and response.get("transactions"):
+                    last_transaction = response["transactions"][-1]
+                    saldo_cents = float(last_transaction["balance_cents"]) / 100
+                    return {
+                        "Account": account_id,
+                        "transactions_total": total_transactions,
+                        "saldo_cents": saldo_cents
+                    }
+            
+            if attempt < max_retries - 1:
+                print(f"Tentativa {attempt + 1} falhou, aguardando 30 segundos...")
+                sleep(5)
+                
     except Exception as e:
         print(f"Erro ao processar conta {account_id}: {e}")
     
+    print(f"Não foi possível obter saldo para a conta {account_id}")
     return {
         "Account": account_id,
         "transactions_total": 0,
@@ -145,7 +139,7 @@ def check_all_accounts():
         sh_gateway = gc.open("Gateway")
         wks_subcontas = sh_gateway.worksheet_by_title("Subcontas")
         sh_balance = gc.open("Daily Balance - Nox Pay")
-        wks_IUGU_subacc = sh_balance.worksheet_by_title("IUGU Subcontas TESTE")
+        wks_IUGU_subacc = sh_balance.worksheet_by_title("IUGU Subcontas")
 
         # Verifica o trigger
         print("Verificando trigger...")
@@ -168,30 +162,27 @@ def check_all_accounts():
         # Lista para armazenar resultados
         resultados = []
         
-        # Processa em lotes pequenos
-        batch_size = 3  # Processa 3 contas por vez
+        # Processa cada conta
         total_contas = len(df_subcontas_ativas)
-        
-        for i in range(0, total_contas, batch_size):
-            batch = df_subcontas_ativas.iloc[i:i+batch_size]
-            print(f"\nProcessando lote {i//batch_size + 1}/{-(-total_contas//batch_size)}")
+        print(f"\nProcessando {total_contas} contas...")
+
+        for idx, row in df_subcontas_ativas.iterrows():
+            token = row["live_token_full"]
+            account = row["account"]
             
-            for _, row in batch.iterrows():
-                token = row["live_token_full"]
-                account = row["account"]
-                
-                print(f"Account: {account}")
-                resultado = get_account_balance(ssh_client, token, account)
-                
-                if resultado["saldo_cents"] > 0 or resultado["transactions_total"] > 0:
-                    resultados.append(resultado)
-                    print(f"Resultado:")
-                    print(f"- Saldo: R$ {resultado['saldo_cents']:,.2f}")
-                    print(f"- Total transações: {resultado['transactions_total']}")
+            print(f"\nProcessando conta {idx + 1}/{total_contas}")
+            print(f"Account: {account}")
             
-            # Pequena pausa entre lotes
-            if i + batch_size < total_contas:
-                sleep(2)
+            resultado = get_account_balance(ssh_client, token, account)
+            
+            if resultado:
+                resultados.append(resultado)
+                print(f"Resultado:")
+                print(f"- Saldo: R$ {resultado['saldo_cents']:,.2f}")
+                print(f"- Total transações: {resultado['transactions_total']}")
+            
+            # Pequena pausa entre as requisições
+            sleep(2)
         
         # Cria DataFrame com resultados
         df_resultados = pd.DataFrame(resultados)
