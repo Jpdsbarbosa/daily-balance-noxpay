@@ -173,38 +173,18 @@ def get_account_balance_large(ssh_client, token, account_id):
         return None
 
 def get_account_balance(ssh_client, token, account_id):
-    # Se for uma conta grande, usa função específica
-    if account_id in CONTAS_GRANDES:
-        result = get_account_balance_large(ssh_client, token, account_id)
-        if result:
-            return result
-        print(f"Falha no processamento especial para conta {account_id}")
-        return {
-            "Account": account_id,
-            "transactions_total": 0,
-            "saldo_cents": 0
-        }
-
-    # Lógica normal para outras contas...
     try:
-        # Configura parâmetros baseado no tipo de conta
-        if account_id in CONTAS_GRANDES:
-            config = CONTAS_GRANDES[account_id]
-            timeout = config["timeout"]
-            max_retries = config["retries"]
-            wait_time = 15  # Espera maior para contas grandes
-        else:
-            timeout = 30
-            max_retries = 2
-            wait_time = 5
-
+        # Configura timeout baseado no tipo de conta
+        timeout = 300 if account_id in CONTAS_GRANDES else 30
+        max_retries = 5 if account_id in CONTAS_GRANDES else 3
+        
         for attempt in range(max_retries):
             # Primeiro pega o total de transações
-            response = execute_curl(ssh_client, f"{url_financial}?api_token={token}", 
-                                 timeout=timeout)
+            response = execute_curl(ssh_client, f"{url_financial}?api_token={token}", timeout=timeout)
             
             if response and "transactions_total" in response:
                 total_transactions = response["transactions_total"]
+                print(f"Total de transações: {total_transactions}")
                 
                 # Pega apenas as últimas transações
                 start = max(0, total_transactions - 50)
@@ -215,6 +195,7 @@ def get_account_balance(ssh_client, token, account_id):
                 if response and response.get("transactions"):
                     last_transaction = response["transactions"][-1]
                     saldo_cents = float(last_transaction["balance_cents"]) / 100
+                    print(f"Saldo encontrado: R$ {saldo_cents:,.2f}")
                     return {
                         "Account": account_id,
                         "transactions_total": total_transactions,
@@ -222,6 +203,7 @@ def get_account_balance(ssh_client, token, account_id):
                     }
             
             if attempt < max_retries - 1:
+                wait_time = 30 if account_id in CONTAS_GRANDES else 10
                 print(f"Tentativa {attempt + 1} falhou, aguardando {wait_time} segundos...")
                 sleep(wait_time)
                 
