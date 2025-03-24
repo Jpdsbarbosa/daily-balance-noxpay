@@ -64,9 +64,16 @@ def connect_ssh():
     print("Conexão SSH estabelecida com sucesso.")
     return ssh_client
 
-def execute_curl(ssh_client, url, timeout=30, max_retries=2):
+def execute_curl(ssh_client, url, timeout=30):
+    max_retries = 5 if any(acc in url for acc in CONTAS_GRANDES) else 2
+    
     for attempt in range(max_retries):
         try:
+            if "?" in url:
+                url += "&limit=50"
+            else:
+                url += "?limit=50"
+                
             curl_cmd = f'curl -s -m {timeout} "{url}" -H "accept: application/json"'
             print(f"Tentativa {attempt + 1}/{max_retries}: Executando consulta...")
             
@@ -76,78 +83,76 @@ def execute_curl(ssh_client, url, timeout=30, max_retries=2):
             
             if error:
                 print(f"Erro no curl: {error}")
-                sleep(3)
+                sleep(5)
                 continue
                 
             if "error code: 504" in response:
                 print("Erro 504 detectado, aguardando...")
-                sleep(5)
+                sleep(10)
                 continue
                 
             try:
                 return json.loads(response)
             except json.JSONDecodeError:
                 print(f"Erro ao decodificar JSON: {response[:200]}...")
-                sleep(3)
+                sleep(5)
                 continue
                 
         except Exception as e:
             print(f"Erro na tentativa {attempt + 1}: {e}")
-            sleep(3)
+            sleep(5)
             
     return None
 
-def get_account_balance_large(ssh_client, token, account_id):
-    """Função específica para contas com muitas transações"""
-    try:
-        config = CONTAS_GRANDES[account_id]
-        timeout = config["timeout"]
-        max_retries = config["retries"]
-        
-        # Verifica rate limit
-        rate_limiter.wait_if_needed()
-        
-        # Faz apenas UMA chamada, ordenando por data de criação decrescente
-        url = f"{url_financial}?api_token={token}&limit=1&sort=-created_at"
-        response = execute_curl(ssh_client, url, timeout=timeout, max_retries=max_retries)
-        
-        if response and response.get("transactions"):
-            last_transaction = response["transactions"][0]  # Pega a primeira (mais recente)
-            saldo_cents = float(last_transaction["balance_cents"]) / 100
-            total_transactions = response.get("total_items", 0)
-            return {
-                "Account": account_id,
-                "transactions_total": total_transactions,
-                "saldo_cents": saldo_cents
-            }
-    except Exception as e:
-        print(f"Erro ao processar conta grande {account_id}: {e}")
-    
-    return None
-
 def get_account_balance(ssh_client, token, account_id):
-    """Função para contas normais"""
     try:
-        # Verifica rate limit
-        rate_limiter.wait_if_needed()
-        
-        # Faz apenas UMA chamada, ordenando por data de criação decrescente
-        url = f"{url_financial}?api_token={token}&limit=1&sort=-created_at"
-        response = execute_curl(ssh_client, url)
-        
-        if response and response.get("transactions"):
-            last_transaction = response["transactions"][0]  # Pega a primeira (mais recente)
-            saldo_cents = float(last_transaction["balance_cents"]) / 100
-            total_transactions = response.get("total_items", 0)
-            return {
-                "Account": account_id,
-                "transactions_total": total_transactions,
-                "saldo_cents": saldo_cents
-            }
+        # Configura parâmetros baseado no tipo de conta
+        if account_id in CONTAS_GRANDES:
+            config = CONTAS_GRANDES[account_id]
+            timeout = config["timeout"]
+            max_retries = config["retries"]
+            wait_time = 15  # Espera maior para contas grandes
+        else:
+            timeout = 30
+            max_retries = 2
+            wait_time = 5
+
+        for attempt in range(max_retries):
+            # Primeiro pega o total de transações
+            response = execute_curl(ssh_client, f"{url_financial}?api_token={token}", 
+                                 timeout=timeout)
+            
+            if response and "transactions_total" in response:
+                total_transactions = response["transactions_total"]
+                
+                # Pega apenas as últimas transações
+                start = max(0, total_transactions - 50)
+                response = execute_curl(ssh_client, 
+                                     f"{url_financial}?api_token={token}&start={start}",
+                                     timeout=timeout)
+                
+                if response and response.get("transactions"):
+                    last_transaction = response["transactions"][-1]
+                    saldo_cents = float(last_transaction["balance_cents"]) / 100
+                    return {
+                        "Account": account_id,
+                        "transactions_total": total_transactions,
+                        "saldo_cents": saldo_cents
+                    }
+            
+            if attempt < max_retries - 1:
+                print(f"Tentativa {attempt + 1} falhou, aguardando {wait_time} segundos...")
+                sleep(wait_time)
+                
     except Exception as e:
         print(f"Erro ao processar conta {account_id}: {e}")
     
-    return None
+    print(f"Não foi possível obter saldo para a conta {account_id}")
+    return {
+        "Account": account_id,
+        "transactions_total": 0,
+        "saldo_cents": 0
+    }
 
 def check_trigger(wks_IUGU_subacc):
     """Verifica se a célula B1 contém TRUE para executar o script."""
@@ -214,7 +219,7 @@ def check_all_accounts():
             account = row["account"]
             
             print(f"\nAccount (grande): {account}")
-            resultado = get_account_balance_large(ssh_client, token, account)
+            resultado = get_account_balance(ssh_client, token, account)
             
             if resultado:
                 resultados.append(resultado)
