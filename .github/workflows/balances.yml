@@ -1,10 +1,13 @@
 name: Balances Depuracao
 
 on:
-  workflow_dispatch:
+  push:
+    branches: [ main ]  # Adiciona trigger de push na branch main
   schedule:
     - cron: '*/60 * * * *'  # Roda a cada hora para manter o job ativo
+  workflow_dispatch:    # Mantém a execução manual
 
+# Adiciona controle de concorrência com nome único
 concurrency:
   group: balances-depuracao-${{ github.workflow }}
   cancel-in-progress: false
@@ -35,6 +38,13 @@ jobs:
           echo '${{ secrets.GOOGLE_CREDENTIALS }}' > controles.json
 
       - name: Run balances script in background
+        env:
+          DB_HOST: ${{ secrets.DB_HOST }}
+          DB_USER: ${{ secrets.DB_USER }}
+          DB_PASS: ${{ secrets.DB_PASS }}
+          DB_NAME: ${{ secrets.DB_NAME }}
+          DB_PORT: ${{ secrets.DB_PORT }}
+          GOOGLE_SHEETS_CREDS: 'controles.json'
         run: |
           nohup python balances_depuração.py > balances.log 2>&1 &
           echo "Script iniciado em background"
@@ -43,7 +53,12 @@ jobs:
 
       - name: Upload log file
         if: always()
-        uses: actions/upload-artifact@v2
+        uses: actions/upload-artifact@v3
         with:
           name: balances-log
           path: balances.log
+
+      - name: Cleanup
+        if: always()
+        run: |
+          rm -f controles.json
