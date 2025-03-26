@@ -1,11 +1,10 @@
 name: Balances Depuracao
 
 on:
+  workflow_dispatch:
   schedule:
-    - cron: '*/1 * * * *'  # Executa a cada 1 minuto
-  workflow_dispatch:        # Mantém a execução manual
+    - cron: '*/60 * * * *'  # Roda a cada hora para manter o job ativo
 
-# Adiciona controle de concorrência com nome único
 concurrency:
   group: balances-depuracao-${{ github.workflow }}
   cancel-in-progress: false
@@ -16,7 +15,6 @@ permissions:
 jobs:
   run-balances:
     runs-on: ubuntu-latest
-    # Removendo environment: production para evitar conflito
     
     steps:
       - name: Checkout code
@@ -34,26 +32,18 @@ jobs:
 
       - name: Setup Google Credentials
         run: |
-          echo '${{ secrets.GOOGLE_CREDENTIALS }}' > controles_balances.json  # Nome diferente do arquivo
+          echo '${{ secrets.GOOGLE_CREDENTIALS }}' > controles.json
 
-      - name: Run balances script
+      - name: Run balances script in background
         run: |
-          set -x  # Mostra os comandos sendo executados
-          echo "=== Iniciando execução em $(date) ==="
-          import pygsheets
-          import os
-          gc = pygsheets.authorize(service_file=os.getenv('GOOGLE_SHEETS_CREDS', 'controles_balances.json'))
-          GOOGLE_SHEETS_CREDS=controles_balances.json python -u balances_depuração.py
-          echo "=== Finalizado em $(date) ==="
-        env:
-          DB_HOST: ${{ secrets.DB_HOST }}
-          DB_USER: ${{ secrets.DB_USER }}
-          DB_PASS: ${{ secrets.DB_PASS }}
-          DB_NAME: ${{ secrets.DB_NAME }}
-          DB_PORT: ${{ secrets.DB_PORT }}
-          GOOGLE_SHEETS_CREDS: 'controles_balances.json'
+          nohup python balances_depuração.py > balances.log 2>&1 &
+          echo "Script iniciado em background"
+          # Mantém o job rodando por ~55 minutos
+          sleep 3300
 
-      - name: Cleanup
+      - name: Upload log file
         if: always()
-        run: |
-          rm -f controles_balances.json
+        uses: actions/upload-artifact@v2
+        with:
+          name: balances-log
+          path: balances.log
