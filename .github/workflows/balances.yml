@@ -4,7 +4,7 @@ on:
   push:
     branches: [ main ]  # Adiciona trigger de push na branch main
   schedule:
-    - cron: '*/59 * * * *'  # Roda a cada hora para manter o job ativo
+    - cron: '*/1 * * * *'  # Roda a cada 1 minuto
   workflow_dispatch:    # Mantém a execução manual
 
 # Adiciona controle de concorrência com nome único
@@ -46,16 +46,10 @@ jobs:
           DB_PORT: ${{ secrets.DB_PORT }}
           GOOGLE_SHEETS_CREDS: 'controles.json'
         run: |
-          nohup python balances_depuração.py > balances.log 2>&1 &
+          python -u balances_depuração.py &  # -u para output sem buffer
           echo "Script iniciado em background"
           # Mantém o job rodando por ~55 minutos
           sleep 3300
-
-      - uses: actions/upload-artifact@v3
-        if: always()
-        with:
-          name: balances-log
-          path: balances.log
 
       - name: Cleanup
         if: always()
