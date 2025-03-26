@@ -4,7 +4,7 @@ on:
   push:
     branches: [ main ]  # Adiciona trigger de push na branch main
   schedule:
-    - cron: '*/60 * * * *'  # Roda a cada hora para manter o job ativo
+    - cron: '*/59 * * * *'  # Roda a cada hora para manter o job ativo
   workflow_dispatch:    # Mantém a execução manual
 
 # Adiciona controle de concorrência com nome único
@@ -21,10 +21,10 @@ jobs:
     
     steps:
       - name: Checkout code
-        uses: actions/checkout@v2
+        uses: actions/checkout@v3
 
       - name: Set up Python
-        uses: actions/setup-python@v2
+        uses: actions/setup-python@v4
         with:
           python-version: '3.x'
 
@@ -51,9 +51,8 @@ jobs:
           # Mantém o job rodando por ~55 minutos
           sleep 3300
 
-      - name: Upload log file
+      - uses: actions/upload-artifact@v3
         if: always()
-        uses: actions/upload-artifact@v3
         with:
           name: balances-log
           path: balances.log
