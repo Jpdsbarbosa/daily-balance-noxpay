@@ -49,3 +49,4 @@ jobs:
           SSH_USERNAME: ${{ secrets.SSH_USERNAME }}
           SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
           CONTAS_GRANDES: ${{ secrets.CONTAS_GRANDES }}
+          url_financial: ${{ secrets.url_financial }}
