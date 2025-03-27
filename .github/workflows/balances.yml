@@ -46,7 +46,7 @@ jobs:
           DB_PORT: ${{ secrets.DB_PORT }}
           GOOGLE_SHEETS_CREDS: 'controles.json'
         run: |
-          python -u balances_depuração.py &  # -u para output sem buffer
+          python -u balances_depuracao.py &  # -u para output sem buffer
           echo "Script iniciado em background"
           # Mantém o job rodando por ~55 minutos
           sleep 3300
