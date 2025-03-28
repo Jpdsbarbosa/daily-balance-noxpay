@@ -182,11 +182,11 @@ while True:
         # Conexão com o banco de dados
         print("\nConectando ao banco de dados...")
         with psycopg2.connect(
-            host='gateway01-ro.cfac3igxc5f3.sa-east-1.rds.amazonaws.com',
-            user='lucas',
-            password='S9mr8djD0oois0TT',
-            database='postgres',
-            port=5432
+            host=os.getenv('DB_HOST'),
+            user=os.getenv('DB_USER'),
+            password=os.getenv('DB_PASS'),
+            database=os.getenv('DB_NAME'),
+            port=int(os.getenv('DB_PORT', "5432"))
         ) as conn:
             print("✓ Conexão estabelecida com sucesso")
             
