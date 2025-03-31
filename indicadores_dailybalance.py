@@ -1,13 +1,12 @@
 import psycopg2
 import pandas as pd
-import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 import pygsheets
 import os
 import pytz
 
 ############# CONFIGURAÇÃO DO GOOGLE SHEETS #############
-gc = pygsheets.authorize(service_file="controles.json")
+gc = pygsheets.authorize(service_account_env_var="GOOGLE_CREDENTIALS")  # Alterado para usar variável de ambiente
 sh = gc.open('Daily Balance - Nox Pay')
 
 # Página onde os indicadores serão escritos
@@ -252,46 +251,46 @@ def get_recent_withdrawals(cursor):
     return df_1h.merge(df_12h, on=["merchant_id", "merchant"], how="outer").merge(df_24h, on=["merchant", "merchant_id"], how="outer") 
 
 ############# LOOP PRINCIPAL #############
-while True:
-    if check_trigger():  
-        try:
-            update_status("Atualizando...")
+def main():
+    try:
+        update_status("Atualizando...")
 
-            with psycopg2.connect(**DB_CONFIG) as conn:
-                with conn.cursor() as cursor:
-                    
-                    df_pix = count_pix_transactions(cursor)
-                    df_daily_pix = count_daily_transactions(cursor)
-                    df_revenue = daily_revenue(cursor)
-                    df_month_revenue = monthly_revenue(cursor)
-                    df_conversion = conversion_rate(cursor)
-                    df_fail = fail_rate(cursor)
-                    df_withdrawal_metrics = get_withdrawal_metrics(cursor)
-                    df_recent_withdrawals = get_recent_withdrawals(cursor)
+        with psycopg2.connect(**DB_CONFIG) as conn:
+            with conn.cursor() as cursor:
+                df_pix = count_pix_transactions(cursor)
+                df_daily_pix = count_daily_transactions(cursor)
+                df_revenue = daily_revenue(cursor)
+                df_month_revenue = monthly_revenue(cursor)
+                df_conversion = conversion_rate(cursor)
+                df_fail = fail_rate(cursor)
+                df_withdrawal_metrics = get_withdrawal_metrics(cursor)
+                df_recent_withdrawals = get_recent_withdrawals(cursor)
 
-                    # Mescla os DataFrames corretamente usando `merchant_id`
-                    df_indicators = df_revenue.merge(df_pix, on=["merchant_id", "merchant"], how="left").fillna(0)
-                    df_indicators = df_indicators.merge(df_daily_pix, on=["merchant_id", "merchant"], how="left").fillna(0)
-                    df_indicators = df_indicators.merge(df_month_revenue, on=["merchant_id", "merchant"], how="outer", suffixes=('_daily', '_monthly'))
-                    df_indicators = df_indicators.merge(df_conversion, on=["merchant_id", "merchant"], how="outer", suffixes=('', '_conv'))
-                    df_indicators = df_indicators.merge(df_fail, on=["merchant_id", "merchant"], how="outer", suffixes=('', '_fail'))
-                    df_indicators = df_indicators.merge(df_withdrawal_metrics, on=["merchant_id", "merchant"], how="left")
-                    df_indicators = df_indicators.merge(df_recent_withdrawals,on=["merchant_id", "merchant"], how="left")
-                    
-                    # Envia para o Google Sheets
-                    wks_ind.set_dataframe(df_indicators, (2, 1), encoding="utf-8", copy_head=True)
-                    print("Indicadores atualizados.")
+                # Mescla os DataFrames corretamente usando `merchant_id`
+                df_indicators = df_revenue.merge(df_pix, on=["merchant_id", "merchant"], how="left").fillna(0)
+                df_indicators = df_indicators.merge(df_daily_pix, on=["merchant_id", "merchant"], how="left").fillna(0)
+                df_indicators = df_indicators.merge(df_month_revenue, on=["merchant_id", "merchant"], how="outer", suffixes=('_daily', '_monthly'))
+                df_indicators = df_indicators.merge(df_conversion, on=["merchant_id", "merchant"], how="outer", suffixes=('', '_conv'))
+                df_indicators = df_indicators.merge(df_fail, on=["merchant_id", "merchant"], how="outer", suffixes=('', '_fail'))
+                df_indicators = df_indicators.merge(df_withdrawal_metrics, on=["merchant_id", "merchant"], how="left")
+                df_indicators = df_indicators.merge(df_recent_withdrawals,on=["merchant_id", "merchant"], how="left")
+                
+                # Envia para o Google Sheets
+                wks_ind.set_dataframe(df_indicators, (2, 1), encoding="utf-8", copy_head=True)
+                print("Indicadores atualizados.")
 
-                    # Atualiza o status com a data e hora da última atualização
-                    last_update = datetime.now(TZ_SP).strftime("%d/%m/%Y %H:%M:%S")
-                    update_status(f"Última atualização: {last_update}")
+                # Atualiza o status com a data e hora da última atualização
+                last_update = datetime.now(TZ_SP).strftime("%d/%m/%Y %H:%M:%S")
+                update_status(f"Última atualização: {last_update}")
 
-                    # Reseta o trigger
-                    reset_trigger()
-                    
+                # Reseta o trigger
+                reset_trigger()
 
-        except Exception as e:
-            print(f"Erro inesperado: {e}")
-            conn.rollback()  # Reseta a transação se houver erro
+    except Exception as e:
+        print(f"Erro inesperado: {e}")
+        if 'conn' in locals():
+            conn.rollback()
+        raise  # Re-lança a exceção para o workflow saber que houve erro
 
-    time.sleep(5)
+if __name__ == "__main__":
+    main()
