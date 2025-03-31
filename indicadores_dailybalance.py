@@ -10,7 +10,7 @@ gc = pygsheets.authorize(service_account_env_var="GOOGLE_CREDENTIALS")  # Altera
 sh = gc.open('Daily Balance - Nox Pay')
 
 # Página onde os indicadores serão escritos
-wks_ind = sh.worksheet_by_title("indicadores TESTE")
+wks_ind = sh.worksheet_by_title("indicadores")
 
 # Configurações do Banco de Dados
 DB_CONFIG = {
