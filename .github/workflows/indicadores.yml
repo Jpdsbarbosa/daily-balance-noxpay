@@ -14,6 +14,7 @@ jobs:
   update-indicadores:
     runs-on: ubuntu-latest
     timeout-minutes: 4  # Limita execução a 4 minutos para evitar sobreposição
+    environment: production
 
     steps:
       - name: Checkout do repositório
@@ -29,10 +30,6 @@ jobs:
           python -m pip install --upgrade pip
           pip install psycopg2-binary pandas pygsheets pytz
 
-      - name: Configurar credenciais do Google Sheets
-        run: |
-          echo '${{ secrets.GOOGLE_SHEETS_CREDENTIALS }}' > controles.json
-
       - name: Executar atualização dos indicadores
         env:
           DB_HOST: ${{ secrets.DB_HOST }}
@@ -40,4 +37,5 @@ jobs:
           DB_PASS: ${{ secrets.DB_PASS }}
           DB_NAME: ${{ secrets.DB_NAME }}
           DB_PORT: ${{ secrets.DB_PORT }}
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
         run: python indicadores_dailybalance.py
