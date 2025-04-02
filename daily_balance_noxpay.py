@@ -257,18 +257,17 @@ def check_all_accounts():
         # Lista para armazenar resultados
         resultados = []
         
-        # Separa contas grandes das normais
-        contas_grandes = df_subcontas_ativas[df_subcontas_ativas["account"].isin(CONTAS_GRANDES.keys())]
-        contas_normais = df_subcontas_ativas[~df_subcontas_ativas["account"].isin(CONTAS_GRANDES.keys())]
-        
-        # Processa primeiro as contas grandes
+        # Processa primeiro as contas grandes na ordem do vault
         print("\nProcessando contas com muitas transações...")
-        for _, row in contas_grandes.iterrows():
-            token = row["live_token_full"]
-            account = row["account"]
-
-            print(f"\nAccount (grande): {account}")
-            resultado = get_account_balance_large(ssh_client, token, account)
+        for account_id in CONTAS_GRANDES.keys():  # Mantém a ordem definida no vault
+            conta = df_subcontas_ativas[df_subcontas_ativas["account"] == account_id]
+            if conta.empty:
+                print(f"Conta grande {account_id} não encontrada ou não está ativa")
+                continue
+                
+            token = conta.iloc[0]["live_token_full"]
+            print(f"\nAccount (grande): {account_id}")
+            resultado = get_account_balance_large(ssh_client, token, account_id)
             
             if resultado:
                 resultados.append(resultado)
@@ -276,8 +275,8 @@ def check_all_accounts():
                 print(f"- Saldo: R$ {resultado['saldo_cents']:,.2f}")
                 print(f"- Total transações: {resultado['transactions_total']}")
             else:
-                print(f"Conta {account} não retornou dados válidos")
-                resultado = get_account_balance(ssh_client, token, account)
+                print(f"Conta {account_id} não retornou dados válidos")
+                resultado = get_account_balance(ssh_client, token, account_id)
                 if resultado:
                     resultados.append(resultado)
                     print(f"Resultado (método alternativo):")
@@ -286,7 +285,8 @@ def check_all_accounts():
             
             sleep(3)  # Pausa entre contas grandes
         
-        # Processa contas normais em lotes
+        # Processa as contas normais (que não estão no CONTAS_GRANDES)
+        contas_normais = df_subcontas_ativas[~df_subcontas_ativas["account"].isin(CONTAS_GRANDES.keys())]
         batch_size = 3
         total_contas = len(contas_normais)
         
