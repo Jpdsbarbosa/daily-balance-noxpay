@@ -16,10 +16,28 @@ SSH_PASSWORD = os.getenv('SSH_PASSWORD')
 url_financial = os.getenv('url_financial')
 
 # Lista de contas com muitas transações
-try:
-    CONTAS_GRANDES = json.loads(os.getenv('CONTAS_GRANDES', '{}'))
-except json.JSONDecodeError:
-    CONTAS_GRANDES = {}
+CONTAS_GRANDES = {
+    "44B0F69654774D829A00413476711E1C": {
+        "timeout": 180,    # Timeout maior para esta conta específica
+        "retries": 5,     # Mais tentativas
+        "batch_size": 1   # Batch menor para evitar sobrecarga
+    },
+    "15277CDE747846BB84C2DFCE85DB504B": {
+        "timeout": 120,
+        "retries": 4,
+        "batch_size": 1
+    },
+    "AB3FF5EA035C48A5864F9B0C6DCC2CC4": {
+        "timeout": 120,
+        "retries": 4,
+        "batch_size": 1
+    },
+    "EA67B2F52FC342AB8D91E3293229FE0B": {
+        "timeout": 120,
+        "retries": 4,
+        "batch_size": 1
+    }
+}
 
 class RateLimiter:
     def __init__(self, max_requests=900, time_window=60):
@@ -289,9 +307,9 @@ def check_all_accounts():
         # Lista para armazenar resultados
         resultados = []
         
-        # Processa primeiro as contas grandes na ordem do vault
-        print("\nProcessando contas com muitas transações...")
-        for account_id in CONTAS_GRANDES.keys():  # Mantém a ordem definida no vault
+        # Primeiro, processa APENAS as contas grandes
+        print("\nProcessando contas grandes primeiro...")
+        for account_id in CONTAS_GRANDES.keys():
             conta = df_subcontas_ativas[df_subcontas_ativas["account"] == account_id]
             if conta.empty:
                 print(f"Conta grande {account_id} não encontrada ou não está ativa")
@@ -299,25 +317,24 @@ def check_all_accounts():
                 
             token = conta.iloc[0]["live_token_full"]
             print(f"\nAccount (grande): {account_id}")
-            resultado = get_account_balance_large(ssh_client, token, account_id)
             
-            if resultado:
-                resultados.append(resultado)
-                print(f"Resultado:")
-                print(f"- Saldo: R$ {resultado['saldo_cents']:,.2f}")
-                print(f"- Total transações: {resultado['transactions_total']}")
-            else:
-                print(f"Conta {account_id} não retornou dados válidos")
-                resultado = get_account_balance(ssh_client, token, account_id)
+            # Tenta várias vezes para contas grandes
+            for tentativa in range(3):
+                resultado = get_account_balance_large(ssh_client, token, account_id)
                 if resultado:
                     resultados.append(resultado)
-                    print(f"Resultado (método alternativo):")
+                    print(f"Resultado:")
                     print(f"- Saldo: R$ {resultado['saldo_cents']:,.2f}")
                     print(f"- Total transações: {resultado['transactions_total']}")
+                    break
+                else:
+                    print(f"Tentativa {tentativa + 1} falhou para conta grande {account_id}")
+                    sleep(30)  # Espera 30 segundos entre tentativas
             
-            sleep(3)  # Pausa entre contas grandes
+            sleep(5)  # Pausa entre contas grandes
         
-        # Processa as contas normais (que não estão no CONTAS_GRANDES)
+        # Depois processa as contas normais
+        print("\nProcessando contas normais...")
         contas_normais = df_subcontas_ativas[~df_subcontas_ativas["account"].isin(CONTAS_GRANDES.keys())]
         batch_size = 3
         total_contas = len(contas_normais)
