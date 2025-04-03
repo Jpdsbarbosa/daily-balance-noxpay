@@ -64,7 +64,14 @@ def connect_ssh():
     return ssh_client
 
 def execute_curl(ssh_client, url, timeout=30):
-    max_retries = 5 if any(acc in url for acc in CONTAS_GRANDES) else 2
+    account_id = None
+    for acc in CONTAS_GRANDES.keys():
+        if acc in url:
+            account_id = acc
+            break
+    
+    max_retries = 5 if account_id else 2
+    wait_time = 15 if account_id else 5  # Espera maior para contas grandes
     
     for attempt in range(max_retries):
         try:
@@ -82,58 +89,87 @@ def execute_curl(ssh_client, url, timeout=30):
             
             if error:
                 print(f"Erro no curl: {error}")
-                sleep(5)
+                sleep(wait_time)
                 continue
                 
             if "error code: 504" in response:
                 print("Erro 504 detectado, aguardando...")
-                sleep(10)
+                sleep(wait_time * 2)  # Dobra o tempo de espera para erro 504
                 continue
             
             try:
                 return json.loads(response)
             except json.JSONDecodeError:
                 print(f"Erro ao decodificar JSON: {response[:200]}...")
-                sleep(5)
+                sleep(wait_time)
                 continue
                 
         except Exception as e:
             print(f"Erro na tentativa {attempt + 1}: {e}")
-            sleep(5)
+            sleep(wait_time)
             
     return None
 
 def get_account_balance_large(ssh_client, token, account_id):
     """Função específica para contas com muitas transações"""
-    config = CONTAS_GRANDES[account_id]  # Pega configuração específica da conta
+    config = CONTAS_GRANDES[account_id]
     timeout = config["timeout"]
     max_retries = config["retries"]
-    batch_size = config["batch_size"]
-
+    
     print(f"\nProcessando conta grande: {account_id}")
     
-    try:
-        # Primeira chamada para pegar o total
-        response = execute_curl(ssh_client, f"{url_financial}?api_token={token}", timeout=timeout)
-        if not response or "transactions_total" not in response:
-            print("Não foi possível obter o total de transações")
-            return None
-
-        total_transactions = response["transactions_total"]
-        print(f"Total de transações: {total_transactions}")
-
-        # Para contas muito grandes, vamos direto para o final
-        start = total_transactions - 1 if total_transactions > 0 else 0
-        
-        # Tenta pegar a última transação
-        for attempt in range(max_retries):
-            url = f"{url_financial}?api_token={token}&start={start}&limit=1"
-            print(f"Tentando pegar última transação (posição {start})")
+    # Função auxiliar para tentar a requisição com backoff exponencial
+    def try_request(url, attempt=1, max_wait=60):
+        try:
+            sleep_time = min(5 * (2 ** (attempt - 1)), max_wait)
+            if attempt > 1:
+                print(f"Aguardando {sleep_time} segundos antes da tentativa {attempt}...")
+                sleep(sleep_time)
             
             response = execute_curl(ssh_client, url, timeout=timeout)
+            if response and "error code: 504" not in str(response):
+                return response
+        except Exception as e:
+            print(f"Erro na tentativa {attempt}: {e}")
+        return None
+
+    # Tenta obter o total de transações
+    total_transactions = None
+    for attempt in range(max_retries):
+        print(f"\nTentativa {attempt + 1}/{max_retries} de obter total de transações")
+        response = try_request(f"{url_financial}?api_token={token}", attempt + 1)
+        
+        if response and "transactions_total" in response:
+            total_transactions = response["transactions_total"]
+            print(f"Total de transações encontrado: {total_transactions}")
+            break
+    
+    if total_transactions is None:
+        print("Não foi possível obter o total de transações após todas as tentativas")
+        return None
+
+    # Tenta obter o saldo começando do final
+    for attempt in range(max_retries):
+        print(f"\nTentativa {attempt + 1}/{max_retries} de obter saldo")
+        
+        # Tenta diferentes posições caso uma falhe
+        positions_to_try = [
+            total_transactions - 1,  # Última transação
+            total_transactions - 50, # 50 transações antes do final
+            total_transactions - 100 # 100 transações antes do final
+        ]
+        
+        for position in positions_to_try:
+            if position < 0:
+                continue
+                
+            url = f"{url_financial}?api_token={token}&start={position}&limit=1"
+            print(f"Tentando posição {position}")
+            
+            response = try_request(url, attempt + 1)
             
             if response and response.get("transactions"):
-                last_transaction = response["transactions"][0]  # Pegamos apenas a última
+                last_transaction = response["transactions"][0]
                 saldo_cents = float(last_transaction["balance_cents"]) / 100
                 print(f"Saldo encontrado: R$ {saldo_cents:,.2f}")
                 return {
@@ -141,13 +177,9 @@ def get_account_balance_large(ssh_client, token, account_id):
                     "transactions_total": total_transactions,
                     "saldo_cents": saldo_cents
                 }
-            
-            print(f"Tentativa {attempt + 1} falhou, aguardando 30 segundos...")
-            sleep(30)
     
-    except Exception as e:
-        print(f"Erro ao processar conta grande {account_id}: {e}")
-        return None
+    print("Não foi possível obter o saldo após todas as tentativas")
+    return None
 
 def get_account_balance(ssh_client, token, account_id):
     try:
