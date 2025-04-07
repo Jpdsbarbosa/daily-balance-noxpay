@@ -2,8 +2,8 @@ name: Daily Balance NOX Pay
 
 on:
   schedule:
-    # Executa a cada 6 minutos
-    - cron: '0,6,12,18,24,30,36,42,48,54 * * * *'
+    # Executa a cada minuto
+    - cron: '*/1 * * * *'
   workflow_dispatch:        # Mantém a execução manual
 
 # Adiciona controle de concorrência
@@ -13,7 +13,6 @@ concurrency:
 
 permissions:
   contents: read
-
 
 jobs:
   run-balance-check:
@@ -37,11 +36,13 @@ jobs:
         run: |
           echo '${{ secrets.GOOGLE_CREDENTIALS }}' > controles.json
 
-      - name: Run balance check
+      - name: Run balance check in background
         run: |
           set -x  # Mostra os comandos sendo executados
           echo "=== Iniciando execução em $(date) ==="
-          python -u daily_balance_noxpay.py  # Flag -u força output sem buffer
+          # Executa o script em background e aguarda 55 minutos
+          python -u daily_balance_noxpay.py &  # Flag -u força output sem buffer
+          sleep 3300  # Aguarda 55 minutos
           echo "=== Finalizado em $(date) ==="
         env:
           SSH_HOST: ${{ secrets.SSH_HOST }}
