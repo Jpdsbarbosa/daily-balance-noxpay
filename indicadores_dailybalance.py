@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 import pygsheets
 import os
 import pytz
+import time
 
 ############# CONFIGURAÇÃO DO GOOGLE SHEETS #############
 gc = pygsheets.authorize(service_account_env_var="GOOGLE_CREDENTIALS")  # Alterado para usar variável de ambiente
@@ -252,45 +253,77 @@ def get_recent_withdrawals(cursor):
 
 ############# LOOP PRINCIPAL #############
 def main():
-    try:
-        update_status("Atualizando...")
+    print("\nIniciando loop principal de indicadores...")
+    while True:
+        try:
+            current_time = datetime.now(TZ_SP)
+            print(f"\n{'='*50}")
+            print(f"Nova atualização de indicadores iniciada em: {current_time}")
+            print(f"{'='*50}")
 
-        with psycopg2.connect(**DB_CONFIG) as conn:
-            with conn.cursor() as cursor:
-                df_pix = count_pix_transactions(cursor)
-                df_daily_pix = count_daily_transactions(cursor)
-                df_revenue = daily_revenue(cursor)
-                df_month_revenue = monthly_revenue(cursor)
-                df_conversion = conversion_rate(cursor)
-                df_fail = fail_rate(cursor)
-                df_withdrawal_metrics = get_withdrawal_metrics(cursor)
-                df_recent_withdrawals = get_recent_withdrawals(cursor)
+            update_status("Atualizando...")
 
-                # Mescla os DataFrames corretamente usando `merchant_id`
-                df_indicators = df_revenue.merge(df_pix, on=["merchant_id", "merchant"], how="left").fillna(0)
-                df_indicators = df_indicators.merge(df_daily_pix, on=["merchant_id", "merchant"], how="left").fillna(0)
-                df_indicators = df_indicators.merge(df_month_revenue, on=["merchant_id", "merchant"], how="outer", suffixes=('_daily', '_monthly'))
-                df_indicators = df_indicators.merge(df_conversion, on=["merchant_id", "merchant"], how="outer", suffixes=('', '_conv'))
-                df_indicators = df_indicators.merge(df_fail, on=["merchant_id", "merchant"], how="outer", suffixes=('', '_fail'))
-                df_indicators = df_indicators.merge(df_withdrawal_metrics, on=["merchant_id", "merchant"], how="left")
-                df_indicators = df_indicators.merge(df_recent_withdrawals,on=["merchant_id", "merchant"], how="left")
-                
-                # Envia para o Google Sheets
-                wks_ind.set_dataframe(df_indicators, (2, 1), encoding="utf-8", copy_head=True)
-                print("Indicadores atualizados.")
+            with psycopg2.connect(**DB_CONFIG) as conn:
+                with conn.cursor() as cursor:
+                    print("\nColetando métricas...")
+                    df_pix = count_pix_transactions(cursor)
+                    print("✓ Métricas PIX coletadas")
+                    
+                    df_daily_pix = count_daily_transactions(cursor)
+                    print("✓ Métricas diárias coletadas")
+                    
+                    df_revenue = daily_revenue(cursor)
+                    print("✓ Receita diária coletada")
+                    
+                    df_month_revenue = monthly_revenue(cursor)
+                    print("✓ Receita mensal coletada")
+                    
+                    df_conversion = conversion_rate(cursor)
+                    print("✓ Taxa de conversão calculada")
+                    
+                    df_fail = fail_rate(cursor)
+                    print("✓ Taxa de falha calculada")
+                    
+                    df_withdrawal_metrics = get_withdrawal_metrics(cursor)
+                    print("✓ Métricas de saque calculadas")
+                    
+                    df_recent_withdrawals = get_recent_withdrawals(cursor)
+                    print("✓ Saques recentes coletados")
 
-                # Atualiza o status com a data e hora da última atualização
-                last_update = datetime.now(TZ_SP).strftime("%d/%m/%Y %H:%M:%S")
-                update_status(f"Última atualização: {last_update}")
+                    print("\nMesclando dados...")
+                    # Mescla os DataFrames corretamente usando `merchant_id`
+                    df_indicators = df_revenue.merge(df_pix, on=["merchant_id", "merchant"], how="left").fillna(0)
+                    df_indicators = df_indicators.merge(df_daily_pix, on=["merchant_id", "merchant"], how="left").fillna(0)
+                    df_indicators = df_indicators.merge(df_month_revenue, on=["merchant_id", "merchant"], how="outer", suffixes=('_daily', '_monthly'))
+                    df_indicators = df_indicators.merge(df_conversion, on=["merchant_id", "merchant"], how="outer", suffixes=('', '_conv'))
+                    df_indicators = df_indicators.merge(df_fail, on=["merchant_id", "merchant"], how="outer", suffixes=('', '_fail'))
+                    df_indicators = df_indicators.merge(df_withdrawal_metrics, on=["merchant_id", "merchant"], how="left")
+                    df_indicators = df_indicators.merge(df_recent_withdrawals,on=["merchant_id", "merchant"], how="left")
+                    
+                    print("\nAtualizando Google Sheets...")
+                    # Envia para o Google Sheets
+                    wks_ind.set_dataframe(df_indicators, (2, 1), encoding="utf-8", copy_head=True)
+                    print("✓ Indicadores atualizados com sucesso")
 
-                # Reseta o trigger
-                reset_trigger()
+                    # Atualiza o status com a data e hora da última atualização
+                    last_update = current_time.strftime("%d/%m/%Y %H:%M:%S")
+                    update_status(f"Última atualização: {last_update}")
 
-    except Exception as e:
-        print(f"Erro inesperado: {e}")
-        if 'conn' in locals():
-            conn.rollback()
-        raise  # Re-lança a exceção para o workflow saber que houve erro
+        except Exception as e:
+            print(f"\nERRO CRÍTICO: {e}")
+            print("Fechando conexão antiga...")
+            try:
+                cursor.close()
+                conn.close()
+            except:
+                pass
+            print("Tentando reiniciar o loop em 60 segundos...")
+            time.sleep(60)
+            continue
+
+        print(f"\nAtualização concluída em: {datetime.now(TZ_SP)}")
+        print("Aguardando 60 segundos para próxima atualização...")
+        time.sleep(60)
 
 if __name__ == "__main__":
     main()
