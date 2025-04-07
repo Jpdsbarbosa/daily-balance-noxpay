@@ -4,12 +4,12 @@ on:
   push:
     branches: [ main ]
   schedule:
-    - cron: '*/1 * * * *'  # Roda a cada 1 minuto, igual ao balances
+    - cron: '*/1 * * * *'  # Roda a cada 1 minuto
   workflow_dispatch:
 
 concurrency:
   group: indicadores-${{ github.workflow }}
-  cancel-in-progress: false  # Não cancela jobs em andamento, igual ao balances
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -33,10 +33,6 @@ jobs:
           python -m pip install --upgrade pip
           pip install psycopg2-binary pandas pygsheets pytz
 
-      - name: Setup Google Credentials
-        run: |
-          echo '${{ secrets.GOOGLE_CREDENTIALS }}' > controles.json
-
       - name: Executar atualização dos indicadores em background
         env:
           DB_HOST: ${{ secrets.DB_HOST }}
@@ -44,7 +40,7 @@ jobs:
           DB_PASS: ${{ secrets.DB_PASS }}
           DB_NAME: ${{ secrets.DB_NAME }}
           DB_PORT: ${{ secrets.DB_PORT }}
-          GOOGLE_SHEETS_CREDS: 'controles.json'
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
         run: |
           python -u indicadores_dailybalance.py &  # Roda em background
           echo "Script iniciado em background"
