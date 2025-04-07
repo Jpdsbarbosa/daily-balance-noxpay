@@ -286,13 +286,7 @@ def check_all_accounts():
         sh_balance = gc.open("Daily Balance - Nox Pay")
         wks_IUGU_subacc = sh_balance.worksheet_by_title("IUGU Subcontas")
 
-        # Verifica o trigger
-        print("Verificando trigger...")
-        if not check_trigger(wks_IUGU_subacc):
-            print("Trigger não está ativo (B1 = FALSE). Encerrando execução.")
-            return
-
-        print("Trigger ativo! Iniciando atualização...")
+        print("Iniciando atualização...")
         update_status(wks_IUGU_subacc, "Atualizando...")
 
         # Lê as subcontas do Google Sheets
@@ -388,7 +382,7 @@ def check_all_accounts():
             print("\nNenhum resultado válido foi obtido!")
             wks_IUGU_subacc.update_value("A1", "Erro: Nenhum resultado válido obtido")
         
-        # Reset do trigger
+        # Reset do trigger ao final da execução
         reset_trigger(wks_IUGU_subacc)
         
         ssh_client.close()
@@ -400,6 +394,40 @@ def check_all_accounts():
         if 'ssh_client' in locals():
             ssh_client.close()
 
+def main():
+    print("\nIniciando loop principal do Daily Balance...")
+    while True:
+        try:
+            current_time = datetime.now(pytz.UTC).astimezone(pytz.timezone('America/Sao_Paulo'))
+            print(f"\n{'='*50}")
+            print(f"Verificação de trigger em: {current_time}")
+            print(f"{'='*50}")
+
+            # Conexão com Google Sheets
+            gc = pygsheets.authorize(service_file="controles.json")
+            sh_balance = gc.open("Daily Balance - Nox Pay")
+            wks_IUGU_subacc = sh_balance.worksheet_by_title("IUGU Subcontas")
+
+            # Verifica o trigger
+            print("Verificando status do trigger...")
+            if check_trigger(wks_IUGU_subacc):
+                print("Trigger ativo! Iniciando atualização...")
+                check_all_accounts()
+            else:
+                print("Trigger não está ativo (B1 = FALSE). Aguardando próxima verificação...")
+
+        except Exception as e:
+            print(f"\nERRO CRÍTICO: {e}")
+            print("Tentando reiniciar o loop em 60 segundos...")
+            import traceback
+            print(traceback.format_exc())
+            sleep(60)
+            continue
+
+        print(f"\nVerificação concluída em: {datetime.now(pytz.UTC).astimezone(pytz.timezone('America/Sao_Paulo'))}")
+        print("Aguardando 60 segundos para próxima verificação do trigger...")
+        sleep(60)  # Verifica o trigger a cada 1 minuto
+
 if __name__ == "__main__":
-    print("Iniciando verificação...")
-    check_all_accounts()
+    print("Iniciando Daily Balance NOX Pay...")
+    main()
