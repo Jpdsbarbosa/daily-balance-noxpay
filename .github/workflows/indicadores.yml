@@ -1,20 +1,22 @@
 name: Indicadores Daily Balance
 
 on:
+  push:
+    branches: [ main ]
   schedule:
-    - cron: '*/5 9-18 * * 1-5'
-    - cron: '*/15 0-8,19-23 * * 1-5'
-    - cron: '*/30 * * * 0,6'
+    - cron: '*/1 * * * *'  # Roda a cada 1 minuto, igual ao balances
   workflow_dispatch:
 
-concurrency: 
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true  # Cancela job anterior se ainda estiver rodando
+concurrency:
+  group: indicadores-${{ github.workflow }}
+  cancel-in-progress: false  # Não cancela jobs em andamento, igual ao balances
+
+permissions:
+  contents: read
 
 jobs:
   update-indicadores:
     runs-on: ubuntu-latest
-    timeout-minutes: 4
     environment: production
 
     steps:
@@ -31,12 +33,24 @@ jobs:
           python -m pip install --upgrade pip
           pip install psycopg2-binary pandas pygsheets pytz
 
-      - name: Executar atualização dos indicadores
+      - name: Setup Google Credentials
+        run: |
+          echo '${{ secrets.GOOGLE_CREDENTIALS }}' > controles.json
+
+      - name: Executar atualização dos indicadores em background
         env:
           DB_HOST: ${{ secrets.DB_HOST }}
           DB_USER: ${{ secrets.DB_USER }}
           DB_PASS: ${{ secrets.DB_PASS }}
           DB_NAME: ${{ secrets.DB_NAME }}
           DB_PORT: ${{ secrets.DB_PORT }}
-          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
-        run: python indicadores_dailybalance.py
+          GOOGLE_SHEETS_CREDS: 'controles.json'
+        run: |
+          python -u indicadores_dailybalance.py &  # Roda em background
+          echo "Script iniciado em background"
+          sleep 3300  # Mantém rodando por 55 minutos
+
+      - name: Cleanup
+        if: always()
+        run: |
+          rm -f controles.json
