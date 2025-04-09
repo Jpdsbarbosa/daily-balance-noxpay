@@ -28,30 +28,41 @@ TZ_SP = pytz.timezone('America/Sao_Paulo')
 ############# CONSULTAS SQL AJUSTADAS PARA INCLUIR MERCHANT_ID #############
 
 def count_pix_transactions(cursor):
-    query = """
-    SELECT 
-        subquery.merchant_id,
-        cm.name_text AS merchant,
-        AVG(subquery.contagem) AS media_pix_minuto
-    FROM (
-        SELECT 
-            cp.merchant_id,
-            DATE_TRUNC('minute', cp.created_at_date AT TIME ZONE 'America/Sao_Paulo') AS minuto,
-            COUNT(*) AS contagem
-        FROM core_payment cp
-        WHERE cp.status_text = 'PAID'
-          AND cp.method_text IN ('PIX', 'PIXOUT')
-          AND cp.created_at_date AT TIME ZONE 'America/Sao_Paulo' >= (NOW() AT TIME ZONE 'America/Sao_Paulo' - INTERVAL '1 hour')
-        GROUP BY cp.merchant_id, minuto
-    ) subquery
-    JOIN core_merchant cm ON subquery.merchant_id = cm.id
-    GROUP BY subquery.merchant_id, cm.name_text
-    ORDER BY media_pix_minuto DESC;
     """
-    cursor.execute(query)
-    results = cursor.fetchall()
-    colnames = [desc[0] for desc in cursor.description]
-    return pd.DataFrame(results, columns=colnames)
+    Versão otimizada da consulta de transações PIX
+    """
+    try:
+        # Aumenta o timeout para 2 minutos
+        cursor.execute("SET statement_timeout = '120s'")
+        
+        query = """
+        WITH last_hour_transactions AS (
+            SELECT 
+                cp.merchant_id,
+                DATE_TRUNC('minute', cp.created_at_date AT TIME ZONE 'America/Sao_Paulo') AS minuto,
+                COUNT(*) AS contagem
+            FROM core_payment cp
+            WHERE cp.status_text = 'PAID'
+              AND cp.method_text IN ('PIX', 'PIXOUT')
+              AND cp.created_at_date AT TIME ZONE 'America/Sao_Paulo' >= (NOW() AT TIME ZONE 'America/Sao_Paulo' - INTERVAL '1 hour')
+            GROUP BY cp.merchant_id, minuto
+        )
+        SELECT 
+            t.merchant_id,
+            cm.name_text AS merchant,
+            COALESCE(AVG(t.contagem), 0) AS media_pix_minuto
+        FROM last_hour_transactions t
+        JOIN core_merchant cm ON t.merchant_id = cm.id
+        GROUP BY t.merchant_id, cm.name_text
+        ORDER BY media_pix_minuto DESC;
+        """
+        cursor.execute(query)
+        results = cursor.fetchall()
+        colnames = [desc[0] for desc in cursor.description]
+        return pd.DataFrame(results, columns=colnames)
+    except Exception as e:
+        print(f"Erro em count_pix_transactions: {e}")
+        return pd.DataFrame(columns=['merchant_id', 'merchant', 'media_pix_minuto'])
 
 def count_daily_transactions(cursor):
     query = """
@@ -153,28 +164,38 @@ def fail_rate(cursor):
 ############# CONSULTA DE PAGAMENTOS (PIXOUT) PARA INDICADORES #############
 def get_withdrawals(cursor, start_date, end_date):
     """
-    Obtém os pagamentos PIXOUT entre as datas fornecidas.
-    """
-    query = """
-    SELECT
-        cp.merchant_id,
-        DATE_TRUNC('hour', cp.created_at_date AT TIME ZONE 'America/Sao_Paulo') AS data_hora,
-        cm.name_text AS merchant, 
-        cp.method_text AS method,
-        COUNT(*) AS quantidade,
-        SUM(cp.amount_decimal) AS volume
-    FROM core_payment cp 
-    JOIN core_merchant cm ON cm.id = cp.merchant_id
-    WHERE cp.status_text = 'PAID'
-      AND cp.method_text = 'PIXOUT'
-      AND cp.created_at_date AT TIME ZONE 'America/Sao_Paulo' BETWEEN %s AND %s
-    GROUP BY cp.merchant_id, data_hora, merchant, method
-    ORDER BY cp.merchant_id, data_hora, merchant;
+    Versão otimizada da consulta de saques
     """
     try:
-        # Adiciona configuração de timeout e isolation level
-        cursor.execute("SET statement_timeout = '30s'")
-        cursor.execute("SET TRANSACTION ISOLATION LEVEL READ COMMITTED")
+        # Aumenta o timeout para 2 minutos
+        cursor.execute("SET statement_timeout = '120s'")
+        cursor.execute("SET work_mem = '256MB'")  # Aumenta a memória de trabalho
+        
+        query = """
+        WITH hourly_withdrawals AS (
+            SELECT
+                cp.merchant_id,
+                DATE_TRUNC('hour', cp.created_at_date AT TIME ZONE 'America/Sao_Paulo') AS data_hora,
+                COUNT(*) AS quantidade,
+                SUM(cp.amount_decimal) AS volume
+            FROM core_payment cp
+            WHERE cp.status_text = 'PAID'
+              AND cp.method_text = 'PIXOUT'
+              AND cp.created_at_date AT TIME ZONE 'America/Sao_Paulo' BETWEEN %s AND %s
+            GROUP BY cp.merchant_id, data_hora
+        )
+        SELECT
+            hw.merchant_id,
+            hw.data_hora,
+            cm.name_text AS merchant,
+            'PIXOUT' AS method,
+            hw.quantidade,
+            hw.volume
+        FROM hourly_withdrawals hw
+        JOIN core_merchant cm ON hw.merchant_id = cm.id
+        ORDER BY hw.merchant_id, hw.data_hora;
+        """
+        
         cursor.execute(query, (start_date, end_date))
         results = cursor.fetchall()
         colnames = [desc[0] for desc in cursor.description]
@@ -299,34 +320,44 @@ def main():
             print(f"Nova atualização de indicadores iniciada em: {current_time}")
             print(f"{'='*50}")
 
-            # Cria nova conexão com configurações otimizadas
+            # Configurações otimizadas para a conexão
             conn = psycopg2.connect(
                 **DB_CONFIG,
                 application_name='indicadores_dailybalance',
-                options='-c statement_timeout=30s'
+                options='-c statement_timeout=120s -c work_mem=256MB -c maintenance_work_mem=256MB'
             )
-            conn.set_session(autocommit=True)  # Evita problemas de transação
+            conn.set_session(
+                autocommit=True,
+                isolation_level=psycopg2.extensions.ISOLATION_LEVEL_READ_COMMITTED
+            )
             cursor = conn.cursor()
 
+            # Define configurações globais para a sessão
+            cursor.execute("SET timezone TO 'America/Sao_Paulo'")
+            cursor.execute("SET statement_timeout TO '120s'")
+            cursor.execute("SET work_mem TO '256MB'")
+
             print("\nColetando métricas...")
-            df_pix = count_pix_transactions(cursor)
-            print("✓ Métricas PIX coletadas")
             
-            df_daily_pix = count_daily_transactions(cursor)
-            print("✓ Métricas diárias coletadas")
-            
-            df_revenue = daily_revenue(cursor)
-            print("✓ Receita diária coletada")
-            
-            df_month_revenue = monthly_revenue(cursor)
-            print("✓ Receita mensal coletada")
-            
-            df_conversion = conversion_rate(cursor)
-            print("✓ Taxa de conversão calculada")
-            
-            df_fail = fail_rate(cursor)
-            print("✓ Taxa de falha calculada")
-            
+            # Coleta as métricas com tratamento de erro individual
+            metrics_functions = [
+                (count_pix_transactions, "Métricas PIX"),
+                (count_daily_transactions, "Métricas diárias"),
+                (daily_revenue, "Receita diária"),
+                (monthly_revenue, "Receita mensal"),
+                (conversion_rate, "Taxa de conversão"),
+                (fail_rate, "Taxa de falha")
+            ]
+
+            results = {}
+            for func, name in metrics_functions:
+                try:
+                    results[name] = func(cursor)
+                    print(f"✓ {name} coletadas")
+                except Exception as e:
+                    print(f"Erro ao coletar {name}: {e}")
+                    results[name] = pd.DataFrame()  # DataFrame vazio em caso de erro
+
             df_withdrawal_metrics = get_withdrawal_metrics(cursor)
             print("✓ Métricas de saque calculadas")
             
@@ -335,11 +366,11 @@ def main():
 
             print("\nMesclando dados...")
             # Mescla os DataFrames corretamente usando `merchant_id`
-            df_indicators = df_revenue.merge(df_pix, on=["merchant_id", "merchant"], how="left").fillna(0)
-            df_indicators = df_indicators.merge(df_daily_pix, on=["merchant_id", "merchant"], how="left").fillna(0)
-            df_indicators = df_indicators.merge(df_month_revenue, on=["merchant_id", "merchant"], how="outer", suffixes=('_daily', '_monthly'))
-            df_indicators = df_indicators.merge(df_conversion, on=["merchant_id", "merchant"], how="outer", suffixes=('', '_conv'))
-            df_indicators = df_indicators.merge(df_fail, on=["merchant_id", "merchant"], how="outer", suffixes=('', '_fail'))
+            df_indicators = results['Receita diária'].merge(results['Métricas PIX'], on=["merchant_id", "merchant"], how="left").fillna(0)
+            df_indicators = df_indicators.merge(results['Métricas diárias'], on=["merchant_id", "merchant"], how="left").fillna(0)
+            df_indicators = df_indicators.merge(results['Receita mensal'], on=["merchant_id", "merchant"], how="outer", suffixes=('_daily', '_monthly'))
+            df_indicators = df_indicators.merge(results['Taxa de conversão'], on=["merchant_id", "merchant"], how="outer", suffixes=('', '_conv'))
+            df_indicators = df_indicators.merge(results['Taxa de falha'], on=["merchant_id", "merchant"], how="outer", suffixes=('', '_fail'))
             df_indicators = df_indicators.merge(df_withdrawal_metrics, on=["merchant_id", "merchant"], how="left")
             df_indicators = df_indicators.merge(df_recent_withdrawals, on=["merchant_id", "merchant"], how="left")
             
@@ -366,7 +397,7 @@ def main():
             if conn:
                 conn.close()
             print("Tentando reiniciar em 180 segundos...")
-            time.sleep(180)  # Alterado para 3 minutos
+            time.sleep(180)
             continue
         finally:
             if cursor:
@@ -375,7 +406,7 @@ def main():
                 conn.close()
 
         print("Aguardando 180 segundos para próxima atualização...")
-        time.sleep(180)  # Alterado para 3 minutos
+        time.sleep(180)
 
 if __name__ == "__main__":
     main()
