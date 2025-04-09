@@ -27,6 +27,37 @@ TZ_SP = pytz.timezone('America/Sao_Paulo')
 
 ############# CONSULTAS SQL AJUSTADAS PARA INCLUIR MERCHANT_ID #############
 
+def execute_query_with_retry(cursor, query, params=None, max_retries=3):
+    """
+    Executa uma query com tentativas em caso de erro
+    """
+    for attempt in range(max_retries):
+        try:
+            if params:
+                cursor.execute(query, params)
+            else:
+                cursor.execute(query)
+            results = cursor.fetchall()
+            colnames = [desc[0] for desc in cursor.description]
+            return pd.DataFrame(results, columns=colnames)
+        except Exception as e:
+            print(f"Tentativa {attempt + 1} falhou: {str(e)}")
+            if attempt < max_retries - 1:
+                time.sleep(5)  # Espera 5 segundos antes de tentar novamente
+                try:
+                    # Tenta reconectar
+                    conn = psycopg2.connect(
+                        **DB_CONFIG,
+                        application_name='indicadores_dailybalance',
+                        options='-c statement_timeout=120s -c work_mem=256MB'
+                    )
+                    conn.set_session(autocommit=True)
+                    cursor = conn.cursor()
+                except:
+                    pass
+            else:
+                return pd.DataFrame()  # Retorna DataFrame vazio se todas as tentativas falharem
+
 def count_pix_transactions(cursor):
     """
     Versão otimizada da consulta de transações PIX
@@ -56,10 +87,7 @@ def count_pix_transactions(cursor):
         GROUP BY t.merchant_id, cm.name_text
         ORDER BY media_pix_minuto DESC;
         """
-        cursor.execute(query)
-        results = cursor.fetchall()
-        colnames = [desc[0] for desc in cursor.description]
-        return pd.DataFrame(results, columns=colnames)
+        return execute_query_with_retry(cursor, query)
     except Exception as e:
         print(f"Erro em count_pix_transactions: {e}")
         return pd.DataFrame(columns=['merchant_id', 'merchant', 'media_pix_minuto'])
@@ -79,10 +107,7 @@ def count_daily_transactions(cursor):
     GROUP BY cp.merchant_id, cm.name_text
     ORDER BY quantidade_pix_dia DESC;
     """
-    cursor.execute(query)
-    results = cursor.fetchall()
-    colnames = [desc[0] for desc in cursor.description]
-    return pd.DataFrame(results, columns=colnames)
+    return execute_query_with_retry(cursor, query)
 
 def daily_revenue(cursor):
     query = """
@@ -99,10 +124,7 @@ def daily_revenue(cursor):
     GROUP BY cp.merchant_id, cm.name_text
     ORDER BY volume DESC;
     """
-    cursor.execute(query)
-    results = cursor.fetchall()
-    colnames = [desc[0] for desc in cursor.description]
-    return pd.DataFrame(results, columns=colnames)
+    return execute_query_with_retry(cursor, query)
 
 def monthly_revenue(cursor):
     query = """
@@ -119,10 +141,7 @@ def monthly_revenue(cursor):
     GROUP BY cp.merchant_id, cm.name_text
     ORDER BY volume_mensal DESC;
     """
-    cursor.execute(query)
-    results = cursor.fetchall()
-    colnames = [desc[0] for desc in cursor.description]
-    return pd.DataFrame(results, columns=colnames)
+    return execute_query_with_retry(cursor, query)
 
 def conversion_rate(cursor):
     query = """
@@ -137,10 +156,7 @@ def conversion_rate(cursor):
     GROUP BY cp.merchant_id, cm.name_text
     ORDER BY taxa_conversao DESC;
     """
-    cursor.execute(query)
-    results = cursor.fetchall()
-    colnames = [desc[0] for desc in cursor.description]
-    return pd.DataFrame(results, columns=colnames)
+    return execute_query_with_retry(cursor, query)
 
 def fail_rate(cursor):
     query = """
@@ -155,10 +171,7 @@ def fail_rate(cursor):
     GROUP BY cp.merchant_id, cm.name_text
     ORDER BY taxa_falha DESC;
     """
-    cursor.execute(query)
-    results = cursor.fetchall()
-    colnames = [desc[0] for desc in cursor.description]
-    return pd.DataFrame(results, columns=colnames)
+    return execute_query_with_retry(cursor, query)
     
 
 ############# CONSULTA DE PAGAMENTOS (PIXOUT) PARA INDICADORES #############
@@ -196,10 +209,7 @@ def get_withdrawals(cursor, start_date, end_date):
         ORDER BY hw.merchant_id, hw.data_hora;
         """
         
-        cursor.execute(query, (start_date, end_date))
-        results = cursor.fetchall()
-        colnames = [desc[0] for desc in cursor.description]
-        return pd.DataFrame(results, columns=colnames)
+        return execute_query_with_retry(cursor, query, (start_date, end_date))
     except Exception as e:
         print(f"Erro ao buscar saques: {e}")
         return pd.DataFrame(columns=['merchant_id', 'data_hora', 'merchant', 'method', 'quantidade', 'volume'])
@@ -297,49 +307,22 @@ def get_recent_withdrawals(cursor):
     GROUP BY merchant_id, merchant
     """
     
-    try:
-        # Adiciona configuração de timeout e isolation level
-        cursor.execute("SET statement_timeout = '30s'")
-        cursor.execute("SET TRANSACTION ISOLATION LEVEL READ COMMITTED")
-        cursor.execute(query, (last_24h, last_1h, last_12h))
-        results = cursor.fetchall()
-        return pd.DataFrame(results, columns=['merchant_id', 'merchant', 'current_1h_withdrawals', 'sum_12h_withdrawals', 'sum_24h_withdrawals'])
-    except Exception as e:
-        print(f"Erro ao buscar saques recentes: {e}")
-        return pd.DataFrame(columns=['merchant_id', 'merchant', 'current_1h_withdrawals', 'sum_12h_withdrawals', 'sum_24h_withdrawals'])
+    return execute_query_with_retry(cursor, query, (last_24h, last_1h, last_12h))
 
 ############# LOOP PRINCIPAL #############
 def main():
     print("\nIniciando loop principal de indicadores...")
     while True:
-        conn = None
-        cursor = None
         try:
             current_time = datetime.now(TZ_SP)
             print(f"\n{'='*50}")
             print(f"Nova atualização de indicadores iniciada em: {current_time}")
             print(f"{'='*50}")
 
-            # Configurações otimizadas para a conexão
-            conn = psycopg2.connect(
-                **DB_CONFIG,
-                application_name='indicadores_dailybalance',
-                options='-c statement_timeout=120s -c work_mem=256MB -c maintenance_work_mem=256MB'
-            )
-            conn.set_session(
-                autocommit=True,
-                isolation_level=psycopg2.extensions.ISOLATION_LEVEL_READ_COMMITTED
-            )
-            cursor = conn.cursor()
-
-            # Define configurações globais para a sessão
-            cursor.execute("SET timezone TO 'America/Sao_Paulo'")
-            cursor.execute("SET statement_timeout TO '120s'")
-            cursor.execute("SET work_mem TO '256MB'")
-
-            print("\nColetando métricas...")
+            # Coleta as métricas com conexões separadas para cada operação
+            results = {}
             
-            # Coleta as métricas com tratamento de erro individual
+            # Lista de funções e seus nomes
             metrics_functions = [
                 (count_pix_transactions, "Métricas PIX"),
                 (count_daily_transactions, "Métricas diárias"),
@@ -349,61 +332,101 @@ def main():
                 (fail_rate, "Taxa de falha")
             ]
 
-            results = {}
+            # Coleta cada métrica com nova conexão
             for func, name in metrics_functions:
                 try:
-                    results[name] = func(cursor)
-                    print(f"✓ {name} coletadas")
+                    with psycopg2.connect(**DB_CONFIG) as conn:
+                        with conn.cursor() as cursor:
+                            # Configurações para cada conexão
+                            cursor.execute("SET timezone TO 'America/Sao_Paulo'")
+                            cursor.execute("SET statement_timeout TO '120s'")
+                            cursor.execute("SET work_mem TO '256MB'")
+                            cursor.execute("SET TRANSACTION ISOLATION LEVEL READ COMMITTED")
+                            
+                            results[name] = func(cursor)
+                            print(f"✓ {name} coletadas")
                 except Exception as e:
                     print(f"Erro ao coletar {name}: {e}")
-                    results[name] = pd.DataFrame()  # DataFrame vazio em caso de erro
+                    results[name] = pd.DataFrame()
 
-            df_withdrawal_metrics = get_withdrawal_metrics(cursor)
-            print("✓ Métricas de saque calculadas")
-            
-            df_recent_withdrawals = get_recent_withdrawals(cursor)
-            print("✓ Saques recentes coletados")
+            # Coleta métricas de saque com nova conexão
+            try:
+                with psycopg2.connect(**DB_CONFIG) as conn:
+                    with conn.cursor() as cursor:
+                        cursor.execute("SET timezone TO 'America/Sao_Paulo'")
+                        cursor.execute("SET statement_timeout TO '120s'")
+                        cursor.execute("SET work_mem TO '256MB'")
+                        df_withdrawal_metrics = get_withdrawal_metrics(cursor)
+                        print("✓ Métricas de saque calculadas")
+            except Exception as e:
+                print(f"Erro ao coletar métricas de saque: {e}")
+                df_withdrawal_metrics = pd.DataFrame()
+
+            # Coleta saques recentes com nova conexão
+            try:
+                with psycopg2.connect(**DB_CONFIG) as conn:
+                    with conn.cursor() as cursor:
+                        cursor.execute("SET timezone TO 'America/Sao_Paulo'")
+                        cursor.execute("SET statement_timeout TO '120s'")
+                        cursor.execute("SET work_mem TO '256MB'")
+                        df_recent_withdrawals = get_recent_withdrawals(cursor)
+                        print("✓ Saques recentes coletados")
+            except Exception as e:
+                print(f"Erro ao coletar saques recentes: {e}")
+                df_recent_withdrawals = pd.DataFrame()
 
             print("\nMesclando dados...")
-            # Mescla os DataFrames corretamente usando `merchant_id`
-            df_indicators = results['Receita diária'].merge(results['Métricas PIX'], on=["merchant_id", "merchant"], how="left").fillna(0)
-            df_indicators = df_indicators.merge(results['Métricas diárias'], on=["merchant_id", "merchant"], how="left").fillna(0)
-            df_indicators = df_indicators.merge(results['Receita mensal'], on=["merchant_id", "merchant"], how="outer", suffixes=('_daily', '_monthly'))
-            df_indicators = df_indicators.merge(results['Taxa de conversão'], on=["merchant_id", "merchant"], how="outer", suffixes=('', '_conv'))
-            df_indicators = df_indicators.merge(results['Taxa de falha'], on=["merchant_id", "merchant"], how="outer", suffixes=('', '_fail'))
-            df_indicators = df_indicators.merge(df_withdrawal_metrics, on=["merchant_id", "merchant"], how="left")
-            df_indicators = df_indicators.merge(df_recent_withdrawals, on=["merchant_id", "merchant"], how="left")
             
-            print("\nAtualizando Google Sheets...")
-            # Antes de enviar para o Google Sheets
-            df_indicators = df_indicators.sort_values('volume', ascending=False)
-            df_indicators = df_indicators.drop_duplicates(subset=['merchant_id'])
+            # Verifica se temos os DataFrames necessários antes de mesclar
+            if not results.get('Receita diária', pd.DataFrame()).empty:
+                df_indicators = results['Receita diária']
+                
+                # Mescla os outros DataFrames apenas se existirem dados
+                for name, df in results.items():
+                    if name != 'Receita diária' and not df.empty:
+                        df_indicators = df_indicators.merge(
+                            df,
+                            on=["merchant_id", "merchant"],
+                            how="left"
+                        ).fillna(0)
 
-            # Formata os números para usar vírgula como decimal
-            for col in df_indicators.select_dtypes(include=['float64']).columns:
-                df_indicators[col] = df_indicators[col].apply(lambda x: '{:.2f}'.format(x).replace('.', ',') if pd.notnull(x) else 'NaN')
+                if not df_withdrawal_metrics.empty:
+                    df_indicators = df_indicators.merge(
+                        df_withdrawal_metrics,
+                        on=["merchant_id", "merchant"],
+                        how="left"
+                    ).fillna(0)
 
-            # Envia para o Google Sheets começando da linha 1
-            wks_ind.set_dataframe(df_indicators, (1, 1), encoding="utf-8", copy_head=True)
-            print("✓ Indicadores atualizados com sucesso")
+                if not df_recent_withdrawals.empty:
+                    df_indicators = df_indicators.merge(
+                        df_recent_withdrawals,
+                        on=["merchant_id", "merchant"],
+                        how="left"
+                    ).fillna(0)
+
+                print("\nAtualizando Google Sheets...")
+                df_indicators = df_indicators.sort_values('volume', ascending=False)
+                df_indicators = df_indicators.drop_duplicates(subset=['merchant_id'])
+
+                # Formata os números
+                for col in df_indicators.select_dtypes(include=['float64']).columns:
+                    df_indicators[col] = df_indicators[col].apply(
+                        lambda x: '{:.2f}'.format(x).replace('.', ',') if pd.notnull(x) else 'NaN'
+                    )
+
+                # Atualiza o Google Sheets
+                wks_ind.set_dataframe(df_indicators, (1, 1), encoding="utf-8", copy_head=True)
+                print("✓ Indicadores atualizados com sucesso")
+            else:
+                print("Erro: Dados básicos não disponíveis para mesclagem")
 
             print(f"Atualização concluída em: {datetime.now(TZ_SP)}")
 
         except Exception as e:
             print(f"\nERRO CRÍTICO: {e}")
-            print("Fechando conexão antiga...")
-            if cursor:
-                cursor.close()
-            if conn:
-                conn.close()
             print("Tentando reiniciar em 180 segundos...")
             time.sleep(180)
             continue
-        finally:
-            if cursor:
-                cursor.close()
-            if conn:
-                conn.close()
 
         print("Aguardando 180 segundos para próxima atualização...")
         time.sleep(180)
