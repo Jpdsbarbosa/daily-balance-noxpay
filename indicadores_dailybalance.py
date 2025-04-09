@@ -25,20 +25,6 @@ DB_CONFIG = {
 # Configuração do fuso horário
 TZ_SP = pytz.timezone('America/Sao_Paulo')
 
-############# VERIFICAR ATIVAÇÃO NO GOOGLE SHEETS #############
-def check_trigger():
-    """Verifica se a célula B1 contém TRUE para executar o script."""
-    status = wks_ind.get_value("B1")
-    return status.strip().upper() == "TRUE"
-
-def reset_trigger():
-    """Após a execução, redefine a célula B1 para FALSE."""
-    wks_ind.update_value("B1", "FALSE")
-
-def update_status(status):
-    """Atualiza o status de execução na célula A1."""
-    wks_ind.update_value("A1", status)
-
 ############# CONSULTAS SQL AJUSTADAS PARA INCLUIR MERCHANT_ID #############
 
 def count_pix_transactions(cursor):
@@ -167,7 +153,7 @@ def get_withdrawals(cursor, start_date, end_date):
     query = """
     SELECT
         cp.merchant_id,
-        DATE_TRUNC('hour', cp.finalized_at_date AT TIME ZONE 'America/Sao_Paulo') AS data_hora,
+        DATE_TRUNC('hour', cp.created_at_date AT TIME ZONE 'America/Sao_Paulo') AS data_hora,
         cm.name_text AS merchant, 
         cp.method_text AS method,
         COUNT(*) AS quantidade,
@@ -176,7 +162,7 @@ def get_withdrawals(cursor, start_date, end_date):
     JOIN core_merchant cm ON cm.id = cp.merchant_id
     WHERE cp.status_text = 'PAID'
       AND cp.method_text = 'PIXOUT'
-      AND cp.finalized_at_date BETWEEN %s AND %s
+      AND cp.created_at_date AT TIME ZONE 'America/Sao_Paulo' BETWEEN %s AND %s
     GROUP BY cp.merchant_id, data_hora, merchant, method
     ORDER BY cp.merchant_id, data_hora, merchant;
     """
@@ -204,32 +190,42 @@ def get_withdrawal_metrics(cursor):
 
     df["data_hora"] = pd.to_datetime(df["data_hora"])
 
-    # Cálculo da média e desvio padrão para 1h, 12h e 24h
-    df_1h = df.groupby(["merchant", "merchant_id", pd.Grouper(key="data_hora", freq="h")])[["volume", "quantidade"]].sum().reset_index()
-    df_12h = df.groupby(["merchant", "merchant_id", pd.Grouper(key="data_hora", freq="12h")])[["volume", "quantidade"]].sum().reset_index()
-    df_1d = df.groupby(["merchant", "merchant_id", pd.Grouper(key="data_hora", freq="d")])[["volume", "quantidade"]].sum().reset_index()
-
-    metrics_1h = df_1h.groupby(["merchant_id", "merchant"]).agg({
-        "volume": ["mean", "std"],
-        "quantidade": ["mean", "std"]
-    }).reset_index()
-    metrics_1h.columns = ["merchant_id", "merchant", "mean_1h_volume", "std_1h_volume", "mean_1h_quantidade", "std_1h_quantidade"]
-
-    metrics_12h = df_12h.groupby(["merchant_id", "merchant"]).agg({
-        "volume": ["mean", "std"],
-        "quantidade": ["mean", "std"]
-    }).reset_index()
-    metrics_12h.columns = ["merchant_id", "merchant", "mean_12h_volume", "std_12h_volume", "mean_12h_quantidade", "std_12h_quantidade"]
-
-    metrics_1d = df_1d.groupby(["merchant_id", "merchant"]).agg({
-        "volume": ["mean", "std"],
-        "quantidade": ["mean", "std"]
-    }).reset_index()
-    metrics_1d.columns = ["merchant_id", "merchant", "mean_1d_volume", "std_1d_volume", "mean_1d_quantidade", "std_1d_quantidade"]
-
-    result = metrics_1h.merge(metrics_12h, on=["merchant_id", "merchant"], how="outer").merge(metrics_1d, on=["merchant_id", "merchant"], how="outer")
-
-    return result
+    # Preenche os períodos vazios com 0
+    idx = pd.date_range(start=start_date, end=end_date, freq='H')
+    
+    # Cálculo correto das métricas por período
+    metrics = []
+    for merchant_id, merchant_df in df.groupby(["merchant_id", "merchant"]):
+        # Reindexação com preenchimento de zeros para períodos sem dados
+        merchant_ts = merchant_df.set_index('data_hora').reindex(idx, fill_value=0)
+        
+        # Cálculos para 1h
+        h1_stats = merchant_ts[['volume', 'quantidade']].resample('1H').sum().agg(['mean', 'std'])
+        
+        # Cálculos para 12h
+        h12_stats = merchant_ts[['volume', 'quantidade']].resample('12H').sum().agg(['mean', 'std'])
+        
+        # Cálculos para 24h
+        d1_stats = merchant_ts[['volume', 'quantidade']].resample('24H').sum().agg(['mean', 'std'])
+        
+        metrics.append({
+            'merchant_id': merchant_id[0],
+            'merchant': merchant_id[1],
+            'mean_1h_volume': h1_stats['volume']['mean'],
+            'std_1h_volume': h1_stats['volume']['std'],
+            'mean_1h_quantidade': h1_stats['quantidade']['mean'],
+            'std_1h_quantidade': h1_stats['quantidade']['std'],
+            'mean_12h_volume': h12_stats['volume']['mean'],
+            'std_12h_volume': h12_stats['volume']['std'],
+            'mean_12h_quantidade': h12_stats['quantidade']['mean'],
+            'std_12h_quantidade': h12_stats['quantidade']['std'],
+            'mean_1d_volume': d1_stats['volume']['mean'],
+            'std_1d_volume': d1_stats['volume']['std'],
+            'mean_1d_quantidade': d1_stats['quantidade']['mean'],
+            'std_1d_quantidade': d1_stats['quantidade']['std']
+        })
+    
+    return pd.DataFrame(metrics)
 
 ############# SAQUES NA ÚLTIMA 1H, 12H, 24H #############
 def get_recent_withdrawals(cursor):
@@ -241,15 +237,25 @@ def get_recent_withdrawals(cursor):
     last_12h = now - timedelta(hours=12)
     last_24h = now - timedelta(hours=24)
 
-    df_1h = get_withdrawals(cursor, last_1h, now).groupby(["merchant_id", "merchant"])["volume"].sum().reset_index()
-    df_12h = get_withdrawals(cursor, last_12h, now).groupby(["merchant_id", "merchant"])["volume"].sum().reset_index()
-    df_24h = get_withdrawals(cursor, last_24h, now).groupby(["merchant_id", "merchant"])["volume"].sum().reset_index()
-
-    df_1h.columns = ["merchant_id", "merchant", "current_1h_withdrawals"]
-    df_12h.columns = ["merchant_id", "merchant", "sum_12h_withdrawals"]
-    df_24h.columns = ["merchant_id", "merchant", "sum_24h_withdrawals"]
-
-    return df_1h.merge(df_12h, on=["merchant_id", "merchant"], how="outer").merge(df_24h, on=["merchant", "merchant_id"], how="outer") 
+    # Ajuste para usar created_at_date em vez de finalized_at_date
+    query = """
+    SELECT
+        cp.merchant_id,
+        cm.name_text AS merchant,
+        SUM(CASE WHEN cp.created_at_date AT TIME ZONE 'America/Sao_Paulo' >= %s THEN cp.amount_decimal ELSE 0 END) as last_1h,
+        SUM(CASE WHEN cp.created_at_date AT TIME ZONE 'America/Sao_Paulo' >= %s THEN cp.amount_decimal ELSE 0 END) as last_12h,
+        SUM(CASE WHEN cp.created_at_date AT TIME ZONE 'America/Sao_Paulo' >= %s THEN cp.amount_decimal ELSE 0 END) as last_24h
+    FROM core_payment cp
+    JOIN core_merchant cm ON cm.id = cp.merchant_id
+    WHERE cp.status_text = 'PAID'
+      AND cp.method_text = 'PIXOUT'
+      AND cp.created_at_date AT TIME ZONE 'America/Sao_Paulo' >= %s
+    GROUP BY cp.merchant_id, cm.name_text
+    """
+    cursor.execute(query, (last_1h, last_12h, last_24h, last_24h))
+    results = cursor.fetchall()
+    df = pd.DataFrame(results, columns=['merchant_id', 'merchant', 'current_1h_withdrawals', 'sum_12h_withdrawals', 'sum_24h_withdrawals'])
+    return df
 
 ############# LOOP PRINCIPAL #############
 def main():
@@ -260,8 +266,6 @@ def main():
             print(f"\n{'='*50}")
             print(f"Nova atualização de indicadores iniciada em: {current_time}")
             print(f"{'='*50}")
-
-            update_status("Atualizando...")
 
             with psycopg2.connect(**DB_CONFIG) as conn:
                 with conn.cursor() as cursor:
@@ -301,13 +305,19 @@ def main():
                     df_indicators = df_indicators.merge(df_recent_withdrawals,on=["merchant_id", "merchant"], how="left")
                     
                     print("\nAtualizando Google Sheets...")
-                    # Envia para o Google Sheets
-                    wks_ind.set_dataframe(df_indicators, (2, 1), encoding="utf-8", copy_head=True)
+                    # Antes de enviar para o Google Sheets
+                    df_indicators = df_indicators.sort_values('volume', ascending=False)
+                    df_indicators = df_indicators.drop_duplicates(subset=['merchant_id'])
+
+                    # Formata os números para usar vírgula como decimal
+                    for col in df_indicators.select_dtypes(include=['float64']).columns:
+                        df_indicators[col] = df_indicators[col].apply(lambda x: '{:.2f}'.format(x).replace('.', ',') if pd.notnull(x) else 'NaN')
+
+                    # Envia para o Google Sheets começando da linha 1
+                    wks_ind.set_dataframe(df_indicators, (1, 1), encoding="utf-8", copy_head=True)
                     print("✓ Indicadores atualizados com sucesso")
 
-                    # Atualiza o status com a data e hora da última atualização
-                    last_update = current_time.strftime("%d/%m/%Y %H:%M:%S")
-                    update_status(f"Última atualização: {last_update}")
+                    print(f"Atualização concluída em: {datetime.now(TZ_SP)}")
 
         except Exception as e:
             print(f"\nERRO CRÍTICO: {e}")
@@ -321,7 +331,6 @@ def main():
             time.sleep(60)
             continue
 
-        print(f"\nAtualização concluída em: {datetime.now(TZ_SP)}")
         print("Aguardando 60 segundos para próxima atualização...")
         time.sleep(60)
 
