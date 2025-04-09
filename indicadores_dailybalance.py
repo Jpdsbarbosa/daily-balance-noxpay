@@ -36,12 +36,12 @@ def count_pix_transactions(cursor):
     FROM (
         SELECT 
             cp.merchant_id,
-            DATE_TRUNC('minute', cp.created_at_date) AS minuto,
+            DATE_TRUNC('minute', cp.created_at_date AT TIME ZONE 'America/Sao_Paulo') AS minuto,
             COUNT(*) AS contagem
         FROM core_payment cp
         WHERE cp.status_text = 'PAID'
           AND cp.method_text IN ('PIX', 'PIXOUT')
-          AND cp.created_at_date >= NOW() - INTERVAL '1 hour'
+          AND cp.created_at_date AT TIME ZONE 'America/Sao_Paulo' >= (NOW() AT TIME ZONE 'America/Sao_Paulo' - INTERVAL '1 hour')
         GROUP BY cp.merchant_id, minuto
     ) subquery
     JOIN core_merchant cm ON subquery.merchant_id = cm.id
@@ -63,7 +63,8 @@ def count_daily_transactions(cursor):
     JOIN core_merchant cm ON cm.id = cp.merchant_id
     WHERE cp.status_text = 'PAID'
       AND cp.method_text IN ('PIX', 'PIXOUT')
-      AND cp.created_at_date >= CURRENT_DATE AT TIME ZONE 'America/Sao_Paulo'
+      AND cp.created_at_date AT TIME ZONE 'America/Sao_Paulo' >= 
+          DATE_TRUNC('day', NOW() AT TIME ZONE 'America/Sao_Paulo')
     GROUP BY cp.merchant_id, cm.name_text
     ORDER BY quantidade_pix_dia DESC;
     """
@@ -82,7 +83,8 @@ def daily_revenue(cursor):
     JOIN core_merchant cm ON cm.id = cp.merchant_id
     WHERE cp.status_text = 'PAID'
       AND cp.method_text = 'FEE'
-      AND cp.created_at_date >= CURRENT_DATE AT TIME ZONE 'America/Sao_Paulo'
+      AND cp.created_at_date AT TIME ZONE 'America/Sao_Paulo' >= 
+          DATE_TRUNC('day', NOW() AT TIME ZONE 'America/Sao_Paulo')
     GROUP BY cp.merchant_id, cm.name_text
     ORDER BY volume DESC;
     """
@@ -101,7 +103,8 @@ def monthly_revenue(cursor):
     JOIN core_merchant cm ON cm.id = cp.merchant_id
     WHERE cp.status_text = 'PAID'
       AND cp.method_text = 'FEE'
-      AND cp.created_at_date >= DATE_TRUNC('month', NOW() AT TIME ZONE 'America/Sao_Paulo')
+      AND cp.created_at_date AT TIME ZONE 'America/Sao_Paulo' >= 
+          DATE_TRUNC('month', NOW() AT TIME ZONE 'America/Sao_Paulo')
     GROUP BY cp.merchant_id, cm.name_text
     ORDER BY volume_mensal DESC;
     """
@@ -118,7 +121,8 @@ def conversion_rate(cursor):
         COUNT(CASE WHEN cp.status_text = 'PAID' THEN 1 END) * 1.0 / NULLIF(COUNT(*), 0) AS taxa_conversao
     FROM core_payment cp
     JOIN core_merchant cm ON cm.id = cp.merchant_id
-    WHERE cp.created_at_date >= CURRENT_DATE AT TIME ZONE 'America/Sao_Paulo'
+    WHERE cp.created_at_date AT TIME ZONE 'America/Sao_Paulo' >= 
+          DATE_TRUNC('day', NOW() AT TIME ZONE 'America/Sao_Paulo')
     GROUP BY cp.merchant_id, cm.name_text
     ORDER BY taxa_conversao DESC;
     """
@@ -135,7 +139,8 @@ def fail_rate(cursor):
         COUNT(CASE WHEN cp.status_text = 'FAIL' THEN 1 END) * 1.0 / NULLIF(COUNT(*), 0) AS taxa_falha
     FROM core_payment cp
     JOIN core_merchant cm ON cm.id = cp.merchant_id
-    WHERE cp.created_at_date >= CURRENT_DATE AT TIME ZONE 'America/Sao_Paulo'
+    WHERE cp.created_at_date AT TIME ZONE 'America/Sao_Paulo' >= 
+          DATE_TRUNC('day', NOW() AT TIME ZONE 'America/Sao_Paulo')
     GROUP BY cp.merchant_id, cm.name_text
     ORDER BY taxa_falha DESC;
     """
@@ -166,10 +171,17 @@ def get_withdrawals(cursor, start_date, end_date):
     GROUP BY cp.merchant_id, data_hora, merchant, method
     ORDER BY cp.merchant_id, data_hora, merchant;
     """
-    cursor.execute(query, (start_date, end_date))
-    results = cursor.fetchall()
-    colnames = [desc[0] for desc in cursor.description]
-    return pd.DataFrame(results, columns=colnames)
+    try:
+        # Adiciona configuração de timeout e isolation level
+        cursor.execute("SET statement_timeout = '30s'")
+        cursor.execute("SET TRANSACTION ISOLATION LEVEL READ COMMITTED")
+        cursor.execute(query, (start_date, end_date))
+        results = cursor.fetchall()
+        colnames = [desc[0] for desc in cursor.description]
+        return pd.DataFrame(results, columns=colnames)
+    except Exception as e:
+        print(f"Erro ao buscar saques: {e}")
+        return pd.DataFrame(columns=['merchant_id', 'data_hora', 'merchant', 'method', 'quantidade', 'volume'])
 
 ############# MÉTRICAS DE SAQUES - ÚLTIMOS 30 DIAS #############
 def get_withdrawal_metrics(cursor):
@@ -178,6 +190,10 @@ def get_withdrawal_metrics(cursor):
     """
     end_date = datetime.now(TZ_SP)
     start_date = end_date - timedelta(days=30)
+    
+    # Converte as datas para o timezone correto
+    start_date = start_date.astimezone(TZ_SP)
+    end_date = end_date.astimezone(TZ_SP)
 
     df = get_withdrawals(cursor, start_date, end_date)
 
@@ -233,106 +249,133 @@ def get_recent_withdrawals(cursor):
     Obtém os saques dos últimos 1h, 12h e 24h.
     """
     now = datetime.now(TZ_SP)
-    last_1h = now - timedelta(hours=1)
-    last_12h = now - timedelta(hours=12)
-    last_24h = now - timedelta(hours=24)
+    last_1h = (now - timedelta(hours=1)).astimezone(TZ_SP)
+    last_12h = (now - timedelta(hours=12)).astimezone(TZ_SP)
+    last_24h = (now - timedelta(hours=24)).astimezone(TZ_SP)
 
-    # Ajuste para usar created_at_date em vez de finalized_at_date
     query = """
+    WITH recent_withdrawals AS (
+        SELECT
+            cp.merchant_id,
+            cm.name_text AS merchant,
+            cp.created_at_date,
+            cp.amount_decimal
+        FROM core_payment cp
+        JOIN core_merchant cm ON cm.id = cp.merchant_id
+        WHERE cp.status_text = 'PAID'
+          AND cp.method_text = 'PIXOUT'
+          AND cp.created_at_date AT TIME ZONE 'America/Sao_Paulo' >= %s
+    )
     SELECT
-        cp.merchant_id,
-        cm.name_text AS merchant,
-        SUM(CASE WHEN cp.created_at_date AT TIME ZONE 'America/Sao_Paulo' >= %s THEN cp.amount_decimal ELSE 0 END) as last_1h,
-        SUM(CASE WHEN cp.created_at_date AT TIME ZONE 'America/Sao_Paulo' >= %s THEN cp.amount_decimal ELSE 0 END) as last_12h,
-        SUM(CASE WHEN cp.created_at_date AT TIME ZONE 'America/Sao_Paulo' >= %s THEN cp.amount_decimal ELSE 0 END) as last_24h
-    FROM core_payment cp
-    JOIN core_merchant cm ON cm.id = cp.merchant_id
-    WHERE cp.status_text = 'PAID'
-      AND cp.method_text = 'PIXOUT'
-      AND cp.created_at_date AT TIME ZONE 'America/Sao_Paulo' >= %s
-    GROUP BY cp.merchant_id, cm.name_text
+        merchant_id,
+        merchant,
+        SUM(CASE WHEN created_at_date AT TIME ZONE 'America/Sao_Paulo' >= %s THEN amount_decimal ELSE 0 END) as current_1h_withdrawals,
+        SUM(CASE WHEN created_at_date AT TIME ZONE 'America/Sao_Paulo' >= %s THEN amount_decimal ELSE 0 END) as sum_12h_withdrawals,
+        SUM(amount_decimal) as sum_24h_withdrawals
+    FROM recent_withdrawals
+    GROUP BY merchant_id, merchant
     """
-    cursor.execute(query, (last_1h, last_12h, last_24h, last_24h))
-    results = cursor.fetchall()
-    df = pd.DataFrame(results, columns=['merchant_id', 'merchant', 'current_1h_withdrawals', 'sum_12h_withdrawals', 'sum_24h_withdrawals'])
-    return df
+    
+    try:
+        # Adiciona configuração de timeout e isolation level
+        cursor.execute("SET statement_timeout = '30s'")
+        cursor.execute("SET TRANSACTION ISOLATION LEVEL READ COMMITTED")
+        cursor.execute(query, (last_24h, last_1h, last_12h))
+        results = cursor.fetchall()
+        return pd.DataFrame(results, columns=['merchant_id', 'merchant', 'current_1h_withdrawals', 'sum_12h_withdrawals', 'sum_24h_withdrawals'])
+    except Exception as e:
+        print(f"Erro ao buscar saques recentes: {e}")
+        return pd.DataFrame(columns=['merchant_id', 'merchant', 'current_1h_withdrawals', 'sum_12h_withdrawals', 'sum_24h_withdrawals'])
 
 ############# LOOP PRINCIPAL #############
 def main():
     print("\nIniciando loop principal de indicadores...")
     while True:
+        conn = None
+        cursor = None
         try:
             current_time = datetime.now(TZ_SP)
             print(f"\n{'='*50}")
             print(f"Nova atualização de indicadores iniciada em: {current_time}")
             print(f"{'='*50}")
 
-            with psycopg2.connect(**DB_CONFIG) as conn:
-                with conn.cursor() as cursor:
-                    print("\nColetando métricas...")
-                    df_pix = count_pix_transactions(cursor)
-                    print("✓ Métricas PIX coletadas")
-                    
-                    df_daily_pix = count_daily_transactions(cursor)
-                    print("✓ Métricas diárias coletadas")
-                    
-                    df_revenue = daily_revenue(cursor)
-                    print("✓ Receita diária coletada")
-                    
-                    df_month_revenue = monthly_revenue(cursor)
-                    print("✓ Receita mensal coletada")
-                    
-                    df_conversion = conversion_rate(cursor)
-                    print("✓ Taxa de conversão calculada")
-                    
-                    df_fail = fail_rate(cursor)
-                    print("✓ Taxa de falha calculada")
-                    
-                    df_withdrawal_metrics = get_withdrawal_metrics(cursor)
-                    print("✓ Métricas de saque calculadas")
-                    
-                    df_recent_withdrawals = get_recent_withdrawals(cursor)
-                    print("✓ Saques recentes coletados")
+            # Cria nova conexão com configurações otimizadas
+            conn = psycopg2.connect(
+                **DB_CONFIG,
+                application_name='indicadores_dailybalance',
+                options='-c statement_timeout=30s'
+            )
+            conn.set_session(autocommit=True)  # Evita problemas de transação
+            cursor = conn.cursor()
 
-                    print("\nMesclando dados...")
-                    # Mescla os DataFrames corretamente usando `merchant_id`
-                    df_indicators = df_revenue.merge(df_pix, on=["merchant_id", "merchant"], how="left").fillna(0)
-                    df_indicators = df_indicators.merge(df_daily_pix, on=["merchant_id", "merchant"], how="left").fillna(0)
-                    df_indicators = df_indicators.merge(df_month_revenue, on=["merchant_id", "merchant"], how="outer", suffixes=('_daily', '_monthly'))
-                    df_indicators = df_indicators.merge(df_conversion, on=["merchant_id", "merchant"], how="outer", suffixes=('', '_conv'))
-                    df_indicators = df_indicators.merge(df_fail, on=["merchant_id", "merchant"], how="outer", suffixes=('', '_fail'))
-                    df_indicators = df_indicators.merge(df_withdrawal_metrics, on=["merchant_id", "merchant"], how="left")
-                    df_indicators = df_indicators.merge(df_recent_withdrawals,on=["merchant_id", "merchant"], how="left")
-                    
-                    print("\nAtualizando Google Sheets...")
-                    # Antes de enviar para o Google Sheets
-                    df_indicators = df_indicators.sort_values('volume', ascending=False)
-                    df_indicators = df_indicators.drop_duplicates(subset=['merchant_id'])
+            print("\nColetando métricas...")
+            df_pix = count_pix_transactions(cursor)
+            print("✓ Métricas PIX coletadas")
+            
+            df_daily_pix = count_daily_transactions(cursor)
+            print("✓ Métricas diárias coletadas")
+            
+            df_revenue = daily_revenue(cursor)
+            print("✓ Receita diária coletada")
+            
+            df_month_revenue = monthly_revenue(cursor)
+            print("✓ Receita mensal coletada")
+            
+            df_conversion = conversion_rate(cursor)
+            print("✓ Taxa de conversão calculada")
+            
+            df_fail = fail_rate(cursor)
+            print("✓ Taxa de falha calculada")
+            
+            df_withdrawal_metrics = get_withdrawal_metrics(cursor)
+            print("✓ Métricas de saque calculadas")
+            
+            df_recent_withdrawals = get_recent_withdrawals(cursor)
+            print("✓ Saques recentes coletados")
 
-                    # Formata os números para usar vírgula como decimal
-                    for col in df_indicators.select_dtypes(include=['float64']).columns:
-                        df_indicators[col] = df_indicators[col].apply(lambda x: '{:.2f}'.format(x).replace('.', ',') if pd.notnull(x) else 'NaN')
+            print("\nMesclando dados...")
+            # Mescla os DataFrames corretamente usando `merchant_id`
+            df_indicators = df_revenue.merge(df_pix, on=["merchant_id", "merchant"], how="left").fillna(0)
+            df_indicators = df_indicators.merge(df_daily_pix, on=["merchant_id", "merchant"], how="left").fillna(0)
+            df_indicators = df_indicators.merge(df_month_revenue, on=["merchant_id", "merchant"], how="outer", suffixes=('_daily', '_monthly'))
+            df_indicators = df_indicators.merge(df_conversion, on=["merchant_id", "merchant"], how="outer", suffixes=('', '_conv'))
+            df_indicators = df_indicators.merge(df_fail, on=["merchant_id", "merchant"], how="outer", suffixes=('', '_fail'))
+            df_indicators = df_indicators.merge(df_withdrawal_metrics, on=["merchant_id", "merchant"], how="left")
+            df_indicators = df_indicators.merge(df_recent_withdrawals, on=["merchant_id", "merchant"], how="left")
+            
+            print("\nAtualizando Google Sheets...")
+            # Antes de enviar para o Google Sheets
+            df_indicators = df_indicators.sort_values('volume', ascending=False)
+            df_indicators = df_indicators.drop_duplicates(subset=['merchant_id'])
 
-                    # Envia para o Google Sheets começando da linha 1
-                    wks_ind.set_dataframe(df_indicators, (1, 1), encoding="utf-8", copy_head=True)
-                    print("✓ Indicadores atualizados com sucesso")
+            # Formata os números para usar vírgula como decimal
+            for col in df_indicators.select_dtypes(include=['float64']).columns:
+                df_indicators[col] = df_indicators[col].apply(lambda x: '{:.2f}'.format(x).replace('.', ',') if pd.notnull(x) else 'NaN')
 
-                    print(f"Atualização concluída em: {datetime.now(TZ_SP)}")
+            # Envia para o Google Sheets começando da linha 1
+            wks_ind.set_dataframe(df_indicators, (1, 1), encoding="utf-8", copy_head=True)
+            print("✓ Indicadores atualizados com sucesso")
+
+            print(f"Atualização concluída em: {datetime.now(TZ_SP)}")
 
         except Exception as e:
             print(f"\nERRO CRÍTICO: {e}")
             print("Fechando conexão antiga...")
-            try:
+            if cursor:
                 cursor.close()
+            if conn:
                 conn.close()
-            except:
-                pass
-            print("Tentando reiniciar o loop em 60 segundos...")
-            time.sleep(60)
+            print("Tentando reiniciar em 180 segundos...")
+            time.sleep(180)  # Alterado para 3 minutos
             continue
+        finally:
+            if cursor:
+                cursor.close()
+            if conn:
+                conn.close()
 
-        print("Aguardando 60 segundos para próxima atualização...")
-        time.sleep(60)
+        print("Aguardando 180 segundos para próxima atualização...")
+        time.sleep(180)  # Alterado para 3 minutos
 
 if __name__ == "__main__":
     main()
