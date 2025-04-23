@@ -136,18 +136,18 @@ def get_payments(cursor):
 ############# FUNÇÃO PARA OBTER TRANSAÇÕES DO BACKOFFICE EM TEMPO REAL #################
 
 def get_backtransactions(cursor):
-    """Obtém transações do Backoffice do dia atual."""
+    """Obtém transações do Backoffice do dia atual no fuso horário do Brasil."""
     try:
         query = """
         SELECT DISTINCT
             (SELECT cm2.name_text FROM core_merchant cm2 WHERE id = merchant_id) AS merchant,
             description_text AS descricao,
             SUM(amount_decimal) AS valor_total,
-            DATE_TRUNC('minute', created_at_date) AS data_criacao,
+            DATE_TRUNC('minute', created_at_date AT TIME ZONE 'America/Sao_Paulo') AS data_criacao,
             MAX(created_at_date) as ultima_atualizacao
         FROM public.core_backofficetrasactions
-        WHERE created_at_date >= DATE_TRUNC('day', NOW())  -- Apenas dados do dia atual
-        GROUP BY DATE_TRUNC('minute', created_at_date), merchant_id, descricao
+        WHERE created_at_date >= (DATE_TRUNC('day', NOW() AT TIME ZONE 'America/Sao_Paulo') AT TIME ZONE 'America/Sao_Paulo' AT TIME ZONE 'GMT')
+        GROUP BY DATE_TRUNC('minute', created_at_date AT TIME ZONE 'America/Sao_Paulo'), merchant_id, descricao
         ORDER BY ultima_atualizacao ASC
         LIMIT 100;
         """
@@ -157,6 +157,8 @@ def get_backtransactions(cursor):
         df = pd.DataFrame(results, columns=["merchant", "descricao", "valor_total", "data_criacao", "ultima_atualizacao"])
         
         if not df.empty:
+            # Formatando a data para o formato desejado (2025-04-22 18:02)
+            df['data_criacao'] = df['data_criacao'].dt.strftime('%Y-%m-%d %H:%M')
             df = df.drop(columns=["ultima_atualizacao"])
             df = df.drop_duplicates()
             print(f"✓ Query de backoffice retornou {len(df)} registros do dia")
