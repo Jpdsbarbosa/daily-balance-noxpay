@@ -49,6 +49,8 @@ def save_saldos_meia_noite(saldos):
 def get_balances(cursor):
     """Obtém os saldos das contas: atual e da meia-noite (horário de Brasília)"""
     try:
+        # --- INÍCIO BLOCO DESATIVADO: Cálculo do saldo inicial (jaci_inicio) ---
+        '''
         query = """
         WITH ultimo_snapshot_dia_anterior AS (
             -- Encontra o último snapshot do dia anterior para cada merchant
@@ -147,10 +149,13 @@ def get_balances(cursor):
         
         print(f"✓ Query de saldos retornou {len(df)} registros")
         return df
-
+        '''
+        # --- FIM BLOCO DESATIVADO ---
+        # Não retorna nada, pois o preenchimento será feito de outra forma
+        return
     except Exception as e:
         print(f"Erro ao obter saldos das contas: {e}")
-        return pd.DataFrame(columns=["merchant_id", "saldo_atual", "saldo_0h", "name_text"])
+        return
 
 ############# FUNÇÃO PARA OBTER ÚLTIMA LINHA PREENCHIDA #############
 
@@ -261,10 +266,7 @@ while True:
             with conn.cursor() as cursor:
                 # Atualiza saldos
                 print("\nAtualizando saldos...")
-                df_balances = get_balances(cursor)
-                if not df_balances.empty:
-                    wks_balances.set_dataframe(df_balances, (1, 1), encoding="utf-8", copy_head=True)
-                    print("✓ Saldos atualizados com sucesso na aba 'jaci'")
+                get_balances(cursor)
 
                 # Atualiza pagamentos   
                 print("\nAtualizando pagamentos...")
