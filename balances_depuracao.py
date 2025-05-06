@@ -60,7 +60,7 @@ def get_balances(cursor):
                     PARTITION BY merchant_id
                     ORDER BY created_at_date DESC
                 ) AS rn
-            FROM balance_snapshots
+            FROM public.core_balancesnapshot
             WHERE created_at_date < DATE_TRUNC('day', NOW() AT TIME ZONE 'America/Sao_Paulo')
         ),
         snapshots_base AS (
@@ -83,7 +83,7 @@ def get_balances(cursor):
                     WHEN p.method_text = 'FEE' AND p.status_text = 'PAID' THEN -p.amount_decimal
                     ELSE 0 
                 END) as total_transacoes
-            FROM core_payment p
+            FROM public.core_payment p
             JOIN snapshots_base s ON p.merchant_id = s.merchant_id
             WHERE p.created_at_date > s.created_at_date
               AND p.created_at_date < DATE_TRUNC('day', NOW() AT TIME ZONE 'America/Sao_Paulo')
@@ -94,7 +94,7 @@ def get_balances(cursor):
             SELECT
                 a.merchant_id,
                 SUM(a.amount_decimal) as total_ajustes
-            FROM core_backofficetrasactions a
+            FROM public.core_backofficetrasactions a
             JOIN snapshots_base s ON a.merchant_id = s.merchant_id
             WHERE a.created_at_date > s.created_at_date
               AND a.created_at_date < DATE_TRUNC('day', NOW() AT TIME ZONE 'America/Sao_Paulo')
