@@ -50,34 +50,99 @@ def get_balances(cursor):
     """Obtém os saldos das contas: atual e da meia-noite (horário de Brasília)"""
     try:
         query = """
+        WITH ultimo_snapshot_dia_anterior AS (
+            -- Encontra o último snapshot do dia anterior para cada merchant
+            SELECT
+                merchant_id,
+                created_at_date,
+                balance_decimal,
+                ROW_NUMBER() OVER (
+                    PARTITION BY merchant_id
+                    ORDER BY created_at_date DESC
+                ) AS rn
+            FROM balance_snapshots
+            WHERE created_at_date < DATE_TRUNC('day', NOW() AT TIME ZONE 'America/Sao_Paulo')
+        ),
+        snapshots_base AS (
+            -- Seleciona apenas o último snapshot de cada merchant
+            SELECT
+                merchant_id,
+                created_at_date,
+                balance_decimal
+            FROM ultimo_snapshot_dia_anterior
+            WHERE rn = 1
+        ),
+        transacoes_ate_meia_noite AS (
+            -- Pega todas as transações entre o último snapshot e a meia-noite
+            SELECT
+                p.merchant_id,
+                SUM(CASE 
+                    WHEN p.method_text = 'PIX' AND p.status_text = 'PAID' THEN p.amount_decimal
+                    WHEN p.method_text = 'PIX' AND p.status_text = 'REFUNDED' THEN -p.amount_decimal
+                    WHEN p.method_text = 'PIXOUT' AND p.status_text = 'PAID' THEN -p.amount_decimal
+                    WHEN p.method_text = 'FEE' AND p.status_text = 'PAID' THEN -p.amount_decimal
+                    ELSE 0 
+                END) as total_transacoes
+            FROM core_payment p
+            JOIN snapshots_base s ON p.merchant_id = s.merchant_id
+            WHERE p.created_at_date > s.created_at_date
+              AND p.created_at_date < DATE_TRUNC('day', NOW() AT TIME ZONE 'America/Sao_Paulo')
+            GROUP BY p.merchant_id
+        ),
+        ajustes_ate_meia_noite AS (
+            -- Pega todos os ajustes entre o último snapshot e a meia-noite
+            SELECT
+                a.merchant_id,
+                SUM(a.amount_decimal) as total_ajustes
+            FROM core_backofficetrasactions a
+            JOIN snapshots_base s ON a.merchant_id = s.merchant_id
+            WHERE a.created_at_date > s.created_at_date
+              AND a.created_at_date < DATE_TRUNC('day', NOW() AT TIME ZONE 'America/Sao_Paulo')
+            GROUP BY a.merchant_id
+        ),
+        saldo_meia_noite AS (
+            -- Calcula o saldo à meia-noite
+            SELECT
+                cm.id AS merchant_id,
+                cm.balance_decimal AS saldo_atual,
+                cm.name_text,
+                COALESCE(s.balance_decimal, 0) 
+                + COALESCE(t.total_transacoes, 0)
+                + COALESCE(a.total_ajustes, 0) AS saldo_0h,
+                COALESCE(
+                    (SELECT SUM(CASE 
+                        WHEN status_text = 'PAID' AND method_text = 'PIX' THEN amount_decimal
+                        WHEN status_text = 'PAID' AND method_text = 'PIXOUT' THEN -amount_decimal
+                        WHEN status_text = 'REFUNDED' THEN -amount_decimal
+                        ELSE 0
+                    END)
+                    FROM public.core_payment cp
+                    WHERE cp.merchant_id = cm.id
+                    AND cp.created_at_date >= DATE_TRUNC('day', NOW() AT TIME ZONE 'America/Sao_Paulo')
+                    AND cp.created_at_date < NOW()
+                    AND cp.status_text IN ('PAID', 'REFUNDED')
+                    AND cp.method_text IN ('PIX', 'PIXOUT')), 0
+                ) as total_transacoes_hoje
+            FROM public.core_merchant cm
+            LEFT JOIN snapshots_base s ON cm.id = s.merchant_id
+            LEFT JOIN transacoes_ate_meia_noite t ON cm.id = t.merchant_id
+            LEFT JOIN ajustes_ate_meia_noite a ON cm.id = a.merchant_id
+        )
         SELECT 
-            cm.id AS merchant_id,
-            cm.balance_decimal AS saldo_atual,
-            cm.name_text,
-            COALESCE(
-                (SELECT SUM(CASE 
-                    WHEN status_text = 'PAID' AND method_text = 'PIX' THEN amount_decimal
-                    WHEN status_text = 'PAID' AND method_text = 'PIXOUT' THEN -amount_decimal
-                    WHEN status_text = 'REFUNDED' THEN -amount_decimal
-                    ELSE 0
-                END)
-                FROM public.core_payment cp
-                WHERE cp.merchant_id = cm.id
-                AND cp.created_at_date >= (DATE_TRUNC('day', NOW() AT TIME ZONE 'America/Sao_Paulo') AT TIME ZONE 'America/Sao_Paulo' AT TIME ZONE 'GMT')
-                AND cp.created_at_date < NOW()
-                AND cp.status_text IN ('PAID', 'REFUNDED')
-                AND cp.method_text IN ('PIX', 'PIXOUT')), 0
-            ) as total_transacoes
-        FROM public.core_merchant cm
-        ORDER BY cm.id ASC;
+            merchant_id,
+            saldo_atual,
+            name_text,
+            saldo_0h,
+            total_transacoes_hoje
+        FROM saldo_meia_noite
+        ORDER BY merchant_id ASC;
         """
         
         print("Executando query de saldos...")
         cursor.execute(query)
         results = cursor.fetchall()
         
-        df = pd.DataFrame(results, columns=["merchant_id", "saldo_atual", "name_text", "total_transacoes"])
-        df["saldo_0h"] = df["saldo_atual"] - df["total_transacoes"]
+        df = pd.DataFrame(results, columns=["merchant_id", "saldo_atual", "name_text", "saldo_0h", "total_transacoes_hoje"])
         df = df[["merchant_id", "saldo_atual", "saldo_0h", "name_text"]]
         
         print(f"✓ Query de saldos retornou {len(df)} registros")
