@@ -132,7 +132,7 @@ def get_jaci_atual_from_postgres(cursor):
         df = pd.DataFrame(results, columns=["merchant_name", "jaci_atual"])
         return df
     except Exception as e:
-        print(f"Erro ao buscar saldos atuais (Jaci Atual): {e}")
+        print(f"Erro ao buscar saldos atuais (saldo_atual): {e}")
         return pd.DataFrame()
 
 ############# LOOP PRINCIPAL #############
@@ -177,17 +177,17 @@ while True:
                     wks_backtxs.set_dataframe(df_backtxs, (last_row_backtxs, 1), encoding="utf-8", copy_head=False)
                     print("✓ Transações do backoffice atualizadas com sucesso na aba 'Backoffice Ajustes'")
 
-                print("\nAtualizando coluna 'Jaci Atual' na aba 'jaci'...")
+                print("\nAtualizando coluna 'saldo_atual' na aba 'jaci'...")
                 df_jaci_atual = get_jaci_atual_from_postgres(cursor)
                 if not df_jaci_atual.empty:
                     sheet_data = wks_balances.get_all_records()
                     df_sheet = pd.DataFrame(sheet_data)
                     df_merge = pd.merge(df_sheet, df_jaci_atual, how='left', left_on='Merchant', right_on='merchant_name')
-                    values_to_update = df_merge['jaci_atual'].fillna("").round(2).astype(str).tolist()
-                    wks_balances.update_col(12, ['Jaci Atual'] + values_to_update)
-                    print("✓ Coluna 'Jaci Atual' atualizada com sucesso na aba 'jaci'.")
+                    values_to_update = df_merge['saldo_atual'].fillna("").round(2).astype(str).tolist()
+                    wks_balances.update_col(12, ['saldo_atual'] + values_to_update)
+                    print("✓ Coluna 'saldo_atual' atualizada com sucesso na aba 'jaci'.")
                 else:
-                    print("⚠️ Nenhum dado retornado do PostgreSQL para 'Jaci Atual'")
+                    print("⚠️ Nenhum dado retornado do PostgreSQL para 'saldo_atual'")
 
     except Exception as e:
         print(f"\nERRO CRÍTICO: {e}")
