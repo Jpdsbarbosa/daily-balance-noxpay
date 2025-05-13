@@ -14,153 +14,23 @@ try:
     gc = pygsheets.authorize(service_file=os.getenv('GOOGLE_SHEETS_CREDS', 'controles.json'))
     sh = gc.open('Daily Balance - Nox Pay')
 
-    # Conectando às abas
     wks_JACI = sh.worksheet_by_title("DATABASE JACI")
     print("✓ Conectado à aba DATABASE JACI")
-    
+
     wks_backtxs = sh.worksheet_by_title("Backoffice Ajustes")
     print("✓ Conectado à aba Backoffice Ajustes")
-    
+
     wks_balances = sh.worksheet_by_title("jaci")
     print("✓ Conectado à aba jaci")
-    
+
     print("Conexão com Google Sheets estabelecida com sucesso!")
 except Exception as e:
     print(f"Erro ao conectar ao Google Sheets: {e}")
     raise
 
-############# FUNÇÃO PARA OBTER SALDO TOTAL POR MERCHANT #############
-
-# Arquivo para armazenar os saldos da meia-noite
-SALDOS_FILE = "saldos_meia_noite.json"
-
-def load_saldos_meia_noite():
-    """Carrega os saldos da meia-noite do arquivo"""
-    if Path(SALDOS_FILE).exists():
-        with open(SALDOS_FILE, 'r') as f:
-            return json.load(f)
-    return {}
-
-def save_saldos_meia_noite(saldos):
-    """Salva os saldos da meia-noite no arquivo"""
-    with open(SALDOS_FILE, 'w') as f:
-        json.dump(saldos, f)
-
-def get_balances(cursor):
-    """Obtém os saldos das contas: atual e da meia-noite (horário de Brasília)"""
-    try:
-        # --- INÍCIO BLOCO DESATIVADO: Cálculo do saldo inicial (jaci_inicio) ---
-        '''
-        query = """
-        WITH ultimo_snapshot_dia_anterior AS (
-            -- Encontra o último snapshot do dia anterior para cada merchant
-            SELECT
-                merchant_id,
-                created_at_date,
-                balance_decimal,
-                ROW_NUMBER() OVER (
-                    PARTITION BY merchant_id
-                    ORDER BY created_at_date DESC
-                ) AS rn
-            FROM public.core_balancesnapshot
-            WHERE created_at_date < DATE_TRUNC('day', NOW() AT TIME ZONE 'America/Sao_Paulo')
-        ),
-        snapshots_base AS (
-            -- Seleciona apenas o último snapshot de cada merchant
-            SELECT
-                merchant_id,
-                created_at_date,
-                balance_decimal
-            FROM ultimo_snapshot_dia_anterior
-            WHERE rn = 1
-        ),
-        transacoes_ate_meia_noite AS (
-            -- Pega todas as transações entre o último snapshot e a meia-noite
-            SELECT
-                p.merchant_id,
-                SUM(CASE 
-                    WHEN p.method_text = 'PIX' AND p.status_text = 'PAID' THEN p.amount_decimal
-                    WHEN p.method_text = 'PIX' AND p.status_text = 'REFUNDED' THEN -p.amount_decimal
-                    WHEN p.method_text = 'PIXOUT' AND p.status_text = 'PAID' THEN -p.amount_decimal
-                    WHEN p.method_text = 'FEE' AND p.status_text = 'PAID' THEN -p.amount_decimal
-                    ELSE 0 
-                END) as total_transacoes
-            FROM public.core_payment p
-            JOIN snapshots_base s ON p.merchant_id = s.merchant_id
-            WHERE p.created_at_date > s.created_at_date
-              AND p.created_at_date < DATE_TRUNC('day', NOW() AT TIME ZONE 'America/Sao_Paulo')
-            GROUP BY p.merchant_id
-        ),
-        ajustes_ate_meia_noite AS (
-            -- Pega todos os ajustes entre o último snapshot e a meia-noite
-            SELECT
-                a.merchant_id,
-                SUM(a.amount_decimal) as total_ajustes
-            FROM public.core_backofficetrasactions a
-            JOIN snapshots_base s ON a.merchant_id = s.merchant_id
-            WHERE a.created_at_date > s.created_at_date
-              AND a.created_at_date < DATE_TRUNC('day', NOW() AT TIME ZONE 'America/Sao_Paulo')
-            GROUP BY a.merchant_id
-        ),
-        saldo_meia_noite AS (
-            -- Calcula o saldo à meia-noite
-            SELECT
-                cm.id AS merchant_id,
-                cm.balance_decimal AS saldo_atual,
-                cm.name_text,
-                COALESCE(s.balance_decimal, 0) 
-                + COALESCE(t.total_transacoes, 0)
-                + COALESCE(a.total_ajustes, 0) AS saldo_0h,
-                COALESCE(
-                    (SELECT SUM(CASE 
-                        WHEN status_text = 'PAID' AND method_text = 'PIX' THEN amount_decimal
-                        WHEN status_text = 'PAID' AND method_text = 'PIXOUT' THEN -amount_decimal
-                        WHEN status_text = 'REFUNDED' THEN -amount_decimal
-                        ELSE 0
-                    END)
-                    FROM public.core_payment cp
-                    WHERE cp.merchant_id = cm.id
-                    AND cp.created_at_date >= DATE_TRUNC('day', NOW() AT TIME ZONE 'America/Sao_Paulo')
-                    AND cp.created_at_date < NOW()
-                    AND cp.status_text IN ('PAID', 'REFUNDED')
-                    AND cp.method_text IN ('PIX', 'PIXOUT')), 0
-                ) as total_transacoes_hoje
-            FROM public.core_merchant cm
-            LEFT JOIN snapshots_base s ON cm.id = s.merchant_id
-            LEFT JOIN transacoes_ate_meia_noite t ON cm.id = t.merchant_id
-            LEFT JOIN ajustes_ate_meia_noite a ON cm.id = a.merchant_id
-        )
-        SELECT 
-            merchant_id,
-            saldo_atual,
-            name_text,
-            saldo_0h,
-            total_transacoes_hoje
-        FROM saldo_meia_noite
-        ORDER BY merchant_id ASC;
-        """
-        
-        print("Executando query de saldos...")
-        cursor.execute(query)
-        results = cursor.fetchall()
-        
-        df = pd.DataFrame(results, columns=["merchant_id", "saldo_atual", "name_text", "saldo_0h", "total_transacoes_hoje"])
-        df = df[["merchant_id", "saldo_atual", "saldo_0h", "name_text"]]
-        
-        print(f"✓ Query de saldos retornou {len(df)} registros")
-        return df
-        '''
-        # --- FIM BLOCO DESATIVADO ---
-        # Não retorna nada, pois o preenchimento será feito de outra forma
-        return
-    except Exception as e:
-        print(f"Erro ao obter saldos das contas: {e}")
-        return
-
-############# FUNÇÃO PARA OBTER ÚLTIMA LINHA PREENCHIDA #############
+############# FUNÇÕES AUXILIARES #############
 
 def get_last_row(worksheet):
-    """Obtém a última linha preenchida de uma aba do Google Sheets."""
     try:
         last_row = len(worksheet.get_col(9, include_tailing_empty=False)) + 1
         print(f"Última linha encontrada em {worksheet.title}: {last_row}")
@@ -169,10 +39,16 @@ def get_last_row(worksheet):
         print(f"Erro ao obter última linha: {e}")
         return 1
 
-############# FUNÇÃO PARA OBTER PAGAMENTOS EM TEMPO REAL #################
+############# FUNÇÕES DE CONSULTA AO BANCO #############
+
+def get_balances(cursor):
+    try:
+        return
+    except Exception as e:
+        print(f"Erro ao obter saldos das contas: {e}")
+        return
 
 def get_payments(cursor):
-    """Obtém os pagamentos processados do dia atual."""
     try:
         query = """
         SELECT DISTINCT
@@ -186,7 +62,6 @@ def get_payments(cursor):
         JOIN core_merchant cm ON cm.id = cp.merchant_id
         WHERE cp.status_text = 'PAID' 
         AND cp.created_at_date >= (DATE_TRUNC('day', NOW() AT TIME ZONE 'America/Sao_Paulo') AT TIME ZONE 'America/Sao_Paulo' AT TIME ZONE 'GMT')
-        -- Apenas dados do dia atual considerando horário de Brasília
         GROUP BY data, merchant, cm.name_text, cp.provider_text, cp.method_text
         ORDER BY data DESC;
         """
@@ -194,7 +69,6 @@ def get_payments(cursor):
         cursor.execute(query)
         results = cursor.fetchall()
         df = pd.DataFrame(results, columns=["data", "merchant", "provider", "meth", "quantidade", "volume"])
-        
         if not df.empty:
             df = df.drop_duplicates()
             print(f"✓ Query de pagamentos retornou {len(df)} registros do dia")
@@ -203,10 +77,7 @@ def get_payments(cursor):
         print(f"Erro ao obter pagamentos: {e}")
         return pd.DataFrame()
 
-############# FUNÇÃO PARA OBTER TRANSAÇÕES DO BACKOFFICE EM TEMPO REAL #################
-
 def get_backtransactions(cursor):
-    """Obtém transações do Backoffice do dia atual no fuso horário do Brasil."""
     try:
         query = """
         SELECT DISTINCT
@@ -225,9 +96,7 @@ def get_backtransactions(cursor):
         cursor.execute(query)
         results = cursor.fetchall()
         df = pd.DataFrame(results, columns=["merchant", "descricao", "valor_total", "data_criacao", "ultima_atualizacao"])
-        
         if not df.empty:
-            # Formatando a data para o formato desejado (2025-04-22 18:02)
             df['data_criacao'] = df['data_criacao'].dt.strftime('%Y-%m-%d %H:%M')
             df = df.drop(columns=["ultima_atualizacao"])
             df = df.drop_duplicates()
@@ -237,7 +106,24 @@ def get_backtransactions(cursor):
         print(f"Erro ao obter transações do backoffice: {e}")
         return pd.DataFrame()
 
-############# LOOP PRINCIPAL - TEMPO REAL #############
+def get_jaci_atual_from_postgres(cursor):
+    try:
+        query = """
+        SELECT
+            name_text AS merchant_name,
+            balance_decimal AS jaci_atual
+        FROM public.core_merchant
+        ORDER BY name_text;
+        """
+        cursor.execute(query)
+        results = cursor.fetchall()
+        df = pd.DataFrame(results, columns=["merchant_name", "jaci_atual"])
+        return df
+    except Exception as e:
+        print(f"Erro ao buscar saldos atuais (Jaci Atual): {e}")
+        return pd.DataFrame()
+
+############# LOOP PRINCIPAL #############
 
 print("\nIniciando loop principal...")
 while True:
@@ -247,12 +133,10 @@ while True:
         print(f"Nova atualização iniciada em: {current_time}")
         print(f"{'='*50}")
 
-        # Executa a cópia dos saldos à meia-noite
         if current_time.hour == 0 and current_time.minute == 0:
             print("Meia-noite detectada, aguardando 1 minuto...")
             time.sleep(60)
-        
-        # Conexão com o banco de dados
+
         print("\nConectando ao banco de dados...")
         with psycopg2.connect(
             host=os.getenv('DB_HOST'),
@@ -262,13 +146,11 @@ while True:
             port=int(os.getenv('DB_PORT', "5432"))
         ) as conn:
             print("✓ Conexão estabelecida com sucesso")
-            
+
             with conn.cursor() as cursor:
-                # Atualiza saldos
                 print("\nAtualizando saldos...")
                 get_balances(cursor)
 
-                # Atualiza pagamentos   
                 print("\nAtualizando pagamentos...")
                 df_payments = get_payments(cursor)
                 if not df_payments.empty:
@@ -276,17 +158,28 @@ while True:
                     wks_JACI.set_dataframe(df_payments, (last_row_JACI, 1), encoding="utf-8", copy_head=False)
                     print("✓ Pagamentos atualizados com sucesso na aba 'DATABASE JACI'")
 
-                # Atualiza backoffice
                 print("\nAtualizando transações do backoffice...")
                 df_backtxs = get_backtransactions(cursor)
                 if not df_backtxs.empty:
                     last_row_backtxs = get_last_row(wks_backtxs)
                     wks_backtxs.set_dataframe(df_backtxs, (last_row_backtxs, 1), encoding="utf-8", copy_head=False)
                     print("✓ Transações do backoffice atualizadas com sucesso na aba 'Backoffice Ajustes'")
-           
+
+                print("\nAtualizando coluna 'saldo_atual' na aba 'jaci'...")
+                df_jaci_atual = get_jaci_atual_from_postgres(cursor)
+                if not df_jaci_atual.empty:
+                    sheet_data = wks_balances.get_all_records()
+                    df_sheet = pd.DataFrame(sheet_data)
+
+                    df_merge = pd.merge(df_sheet, df_jaci_atual, how='left', left_on='Merchant', right_on='merchant_name')
+                    values_to_update = df_merge['jaci_atual'].fillna("").round(2).astype(str).tolist()
+                    wks_balances.update_col(2, ['saldo_atual'] + values_to_update)
+                    print("✓ Coluna 'saldo_atual' atualizada com sucesso na aba 'jaci'.")
+                else:
+                    print("⚠️ Nenhum dado retornado do PostgreSQL para 'saldo_atual'")
+
     except Exception as e:
         print(f"\nERRO CRÍTICO: {e}")
-        print("Fechando conexão antiga...")
         try:
             cursor.close()
             conn.close()
@@ -299,23 +192,3 @@ while True:
     print(f"\nAtualização concluída em: {datetime.now()}")
     print("Aguardando 60 segundos para próxima atualização...")
     time.sleep(60)
-
-# Configurações do Banco de Dados
-DB_CONFIG = {
-    'host': os.getenv('DB_HOST'),
-    'user': os.getenv('DB_USER'),
-    'password': os.getenv('DB_PASS'),
-    'database': os.getenv('DB_NAME'),
-    'port': int(os.getenv('DB_PORT', "5432"))
-}
-
-# Configurações do Google Sheets
-SHEETS_CONFIG = {
-    'service_file': 'controles.json',
-    'spreadsheet_name': 'Daily Balance - Nox Pay',
-    'worksheets': {
-        'jaci_data': "DATABASE JACI",
-        'backoffice': "Backoffice Ajustes",
-        'balances': "jaci"
-    }
-}
