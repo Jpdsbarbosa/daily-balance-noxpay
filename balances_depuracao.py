@@ -30,18 +30,6 @@ except Exception as e:
 
 ############# FUNÇÕES AUXILIARES #############
 
-def load_saldos_meia_noite():
-    SALDOS_FILE = "saldos_meia_noite.json"
-    if Path(SALDOS_FILE).exists():
-        with open(SALDOS_FILE, 'r') as f:
-            return json.load(f)
-    return {}
-
-def save_saldos_meia_noite(saldos):
-    SALDOS_FILE = "saldos_meia_noite.json"
-    with open(SALDOS_FILE, 'w') as f:
-        json.dump(saldos, f)
-
 def get_last_row(worksheet):
     try:
         last_row = len(worksheet.get_col(9, include_tailing_empty=False)) + 1
@@ -132,7 +120,7 @@ def get_jaci_atual_from_postgres(cursor):
         df = pd.DataFrame(results, columns=["merchant_name", "jaci_atual"])
         return df
     except Exception as e:
-        print(f"Erro ao buscar saldos atuais (saldo_atual): {e}")
+        print(f"Erro ao buscar saldos atuais (Jaci Atual): {e}")
         return pd.DataFrame()
 
 ############# LOOP PRINCIPAL #############
@@ -182,9 +170,10 @@ while True:
                 if not df_jaci_atual.empty:
                     sheet_data = wks_balances.get_all_records()
                     df_sheet = pd.DataFrame(sheet_data)
+
                     df_merge = pd.merge(df_sheet, df_jaci_atual, how='left', left_on='Merchant', right_on='merchant_name')
-                    values_to_update = df_merge['saldo_atual'].fillna("").round(2).astype(str).tolist()
-                    wks_balances.update_col(12, ['saldo_atual'] + values_to_update)
+                    values_to_update = df_merge['jaci_atual'].fillna("").round(2).astype(str).tolist()
+                    wks_balances.update_col(2, ['saldo_atual'] + values_to_update)
                     print("✓ Coluna 'saldo_atual' atualizada com sucesso na aba 'jaci'.")
                 else:
                     print("⚠️ Nenhum dado retornado do PostgreSQL para 'saldo_atual'")
@@ -203,22 +192,3 @@ while True:
     print(f"\nAtualização concluída em: {datetime.now()}")
     print("Aguardando 60 segundos para próxima atualização...")
     time.sleep(60)
-
-# Configurações (caso precise usar em outro lugar)
-DB_CONFIG = {
-    'host': os.getenv('DB_HOST'),
-    'user': os.getenv('DB_USER'),
-    'password': os.getenv('DB_PASS'),
-    'database': os.getenv('DB_NAME'),
-    'port': int(os.getenv('DB_PORT', "5432"))
-}
-
-SHEETS_CONFIG = {
-    'service_file': 'controles.json',
-    'spreadsheet_name': 'Daily Balance - Nox Pay',
-    'worksheets': {
-        'jaci_data': "DATABASE JACI",
-        'backoffice': "Backoffice Ajustes",
-        'balances': "jaci"
-    }
-}
