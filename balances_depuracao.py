@@ -105,24 +105,24 @@ def get_backtransactions(cursor):
     except Exception as e:
         print(f"Erro ao obter transações do backoffice: {e}")
         return pd.DataFrame()
-"""
-def get_jaci_atual_from_postgres(cursor):
-    try:
-        query = """
-        SELECT
-            name_text AS merchant_name,
-            balance_decimal AS jaci_atual
-        FROM public.core_merchant
-        ORDER BY name_text;
-        """
-        cursor.execute(query)
-        results = cursor.fetchall()
-        df = pd.DataFrame(results, columns=["merchant_name", "jaci_atual"])
-        return df
-    except Exception as e:
-        print(f"Erro ao buscar saldos atuais (Jaci Atual): {e}")
-        return pd.DataFrame()
-"""
+
+#def get_jaci_atual_from_postgres(cursor):
+ #   try:
+  #      query = """
+   #     SELECT
+    #        name_text AS merchant_name,
+     #       balance_decimal AS jaci_atual
+      #  FROM public.core_merchant
+       # ORDER BY name_text;
+        #"""
+        #cursor.execute(query)
+        #results = cursor.fetchall()
+        #df = pd.DataFrame(results, columns=["merchant_name", "jaci_atual"])
+        #return df
+    #except Exception as e:
+     #   print(f"Erro ao buscar saldos atuais (Jaci Atual): {e}")
+     #   return pd.DataFrame()
+
 ############# LOOP PRINCIPAL #############
 
 print("\nIniciando loop principal...")
