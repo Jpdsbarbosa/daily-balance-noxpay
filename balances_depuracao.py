@@ -105,7 +105,7 @@ def get_backtransactions(cursor):
     except Exception as e:
         print(f"Erro ao obter transações do backoffice: {e}")
         return pd.DataFrame()
-
+"""
 def get_jaci_atual_from_postgres(cursor):
     try:
         query = """
@@ -122,7 +122,7 @@ def get_jaci_atual_from_postgres(cursor):
     except Exception as e:
         print(f"Erro ao buscar saldos atuais (Jaci Atual): {e}")
         return pd.DataFrame()
-
+"""
 ############# LOOP PRINCIPAL #############
 
 print("\nIniciando loop principal...")
@@ -191,4 +191,4 @@ while True:
 
     print(f"\nAtualização concluída em: {datetime.now()}")
     print("Aguardando 60 segundos para próxima atualização...")
-    time.sleep(60)
+    time.sleep(600)
