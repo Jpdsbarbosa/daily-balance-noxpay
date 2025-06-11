@@ -20,8 +20,8 @@ try:
     wks_backtxs = sh.worksheet_by_title("Backoffice Ajustes")
     print("✓ Conectado à aba Backoffice Ajustes")
 
-    wks_balances = sh.worksheet_by_title("jaci")
-    print("✓ Conectado à aba jaci")
+    #wks_balances = sh.worksheet_by_title("jaci")
+    #print("✓ Conectado à aba jaci")
 
     print("Conexão com Google Sheets estabelecida com sucesso!")
 except Exception as e:
@@ -165,18 +165,18 @@ while True:
                     wks_backtxs.set_dataframe(df_backtxs, (last_row_backtxs, 1), encoding="utf-8", copy_head=False)
                     print("✓ Transações do backoffice atualizadas com sucesso na aba 'Backoffice Ajustes'")
 
-                print("\nAtualizando coluna 'saldo_atual' na aba 'jaci'...")
-                df_jaci_atual = get_jaci_atual_from_postgres(cursor)
-                if not df_jaci_atual.empty:
-                    sheet_data = wks_balances.get_all_records()
-                    df_sheet = pd.DataFrame(sheet_data)
-
-                    df_merge = pd.merge(df_sheet, df_jaci_atual, how='left', left_on='Merchant', right_on='merchant_name')
-                    values_to_update = df_merge['jaci_atual'].fillna("").round(2).astype(str).tolist()
-                    wks_balances.update_col(2, ['saldo_atual'] + values_to_update)
-                    print("✓ Coluna 'saldo_atual' atualizada com sucesso na aba 'jaci'.")
-                else:
-                    print("⚠️ Nenhum dado retornado do PostgreSQL para 'saldo_atual'")
+       #         print("\nAtualizando coluna 'saldo_atual' na aba 'jaci'...")
+                #df_jaci_atual = get_jaci_atual_from_postgres(cursor)
+                #if not df_jaci_atual.empty:
+                 #   sheet_data = wks_balances.get_all_records()
+                  #  df_sheet = pd.DataFrame(sheet_data)
+#
+ #                   df_merge = pd.merge(df_sheet, df_jaci_atual, how='left', left_on='Merchant', right_on='merchant_name')
+  #                  values_to_update = df_merge['jaci_atual'].fillna("").round(2).astype(str).tolist()
+   #                 wks_balances.update_col(2, ['saldo_atual'] + values_to_update)
+    #                print("✓ Coluna 'saldo_atual' atualizada com sucesso na aba 'jaci'.")
+     #           else:
+      #              print("⚠️ Nenhum dado retornado do PostgreSQL para 'saldo_atual'")
 
     except Exception as e:
         print(f"\nERRO CRÍTICO: {e}")
