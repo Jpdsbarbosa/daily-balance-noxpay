@@ -1,7 +1,7 @@
 import paramiko
 import json
 from time import sleep
-from datetime import datetim
+from datetime import datetime
 import pygsheets
 import os
 import pytz
