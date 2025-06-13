@@ -34,7 +34,7 @@ jobs:
 
       - name: Setup Google Credentials
         run: |
-          echo '${{ secrets.GOOGLE_SHEETS_CREDES }}' > controles.json
+          echo '${{ secrets.GOOGLE_SHEETS_CREDS }}' > controles.json
 
       - name: Run balance check in background
         run: |
