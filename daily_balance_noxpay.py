@@ -7,6 +7,9 @@ import os
 import pytz
 import psycopg2
 
+############# CONFIGURAÇÃO DO GOOGLE SHEETS #############
+gc = pygsheets.authorize(service_account_env_var="GOOGLE_CREDENTIALS")  # Alterado para usar variável de ambiente
+
 # Configurações do banco de dados PostgreSQL
 DB_HOST = os.getenv('DB_HOST')
 DB_PORT = int(os.getenv('DB_PORT', "5432"))
