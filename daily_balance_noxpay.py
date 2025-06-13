@@ -138,11 +138,12 @@ def check_all_accounts():
         
         cursor = db_connection.cursor()
         
-        # Conecta ao Google Sheets
-        gc = pygsheets.authorize(service_file=os.getenv('GOOGLE_CREDENTIALS', 'controles.json'))
+        # CORREÇÃO: Usar a mesma variável que está no YAML
+        # O YAML que funciona usa 'controles.json' diretamente
+        gc = pygsheets.authorize(service_file='controles.json')
         sh_balance = gc.open("Daily Balance - Nox Pay")
         wks_IUGU_subacc = sh_balance.worksheet_by_title("IUGU Subcontas")
-        wks_jaci = sh_balance.worksheet_by_title("jaci")  # Adicionado para a função get_balances
+        wks_jaci = sh_balance.worksheet_by_title("jaci")
         
         # Executa as funções de snapshot
         print("Atualizando snapshots das contas...")
