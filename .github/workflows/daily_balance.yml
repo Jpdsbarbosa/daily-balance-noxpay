@@ -30,7 +30,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pygsheets pandas paramiko pytz
+          pip install pygsheets pytz datetime
 
       - name: Setup Google Credentials
         run: |
@@ -45,9 +45,9 @@ jobs:
           sleep 3300  # Aguarda 55 minutos
           echo "=== Finalizado em $(date) ==="
         env:
-          SSH_HOST: ${{ secrets.SSH_HOST }}
-          SSH_PORT: ${{ secrets.SSH_PORT }}
-          SSH_USERNAME: ${{ secrets.SSH_USERNAME }}
-          SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
-          CONTAS_GRANDES: ${{ secrets.CONTAS_GRANDES }}
-          url_financial: ${{ secrets.url_financial }}
+          DB_HOST: ${{ secrets.DB_HOST }}
+          DB_USER: ${{ secrets.DB_USER }}
+          DB_PASS: ${{ secrets.DB_PASS }}
+          DB_NAME: ${{ secrets.DB_NAME }}
+          DB_PORT: ${{ secrets.DB_PORT }}
+          GOOGLE_SHEETS_CREDS: 'controles.json'
