@@ -1,8 +1,7 @@
 name: Daily Balance NOX Pay
-
 on:
   schedule:
-    # Executa a cada minuto
+    # Executa a cada minuto - CORRIGIDO
     - cron: '*/1 * * * *'
   workflow_dispatch:        # Mantém a execução manual
 
@@ -20,22 +19,22 @@ jobs:
     
     steps:
       - name: Checkout code
-        uses: actions/checkout@v2
-
+        uses: actions/checkout@v4  # Versão atualizada
+        
       - name: Set up Python
-        uses: actions/setup-python@v2
+        uses: actions/setup-python@v4  # Versão atualizada
         with:
-          python-version: '3.x'
-
+          python-version: '3.11'  # Versão específica
+          
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pygsheets psycopg2 paramiko pytz datetime
-
+          pip install pygsheets psycopg2-binary paramiko pytz  # Removido datetime
+          
       - name: Setup Google Credentials
         run: |
-          echo '${{ secrets.GOOGLE_SHEETS_CREDS }}' > controles.json
-
+          echo '${{ secrets.GOOGLE_CREDENTIALS }}' > controles.json
+          
       - name: Run balance check in background
         run: |
           set -x  # Mostra os comandos sendo executados
@@ -50,4 +49,8 @@ jobs:
           DB_PASS: ${{ secrets.DB_PASS }}
           DB_NAME: ${{ secrets.DB_NAME }}
           DB_PORT: ${{ secrets.DB_PORT }}
-          GOOGLE_SHEETS_CREDS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          
+      - name: Cleanup
+        if: always()
+        run: |
+          rm -f controles.json
