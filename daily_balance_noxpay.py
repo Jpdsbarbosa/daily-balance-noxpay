@@ -7,9 +7,6 @@ import os
 import pytz
 import psycopg2
 
-############# CONFIGURAÇÃO DO GOOGLE SHEETS #############
-gc = pygsheets.authorize(service_account_env_var="GOOGLE_CREDENTIALS")  # Alterado para usar variável de ambiente
-
 # Configurações do banco de dados PostgreSQL
 DB_HOST = os.getenv('DB_HOST')
 DB_PORT = int(os.getenv('DB_PORT', "5432"))
@@ -142,7 +139,7 @@ def check_all_accounts():
         cursor = db_connection.cursor()
         
         # Conecta ao Google Sheets
-        gc = pygsheets.authorize(service_file="controles.json")
+        gc = pygsheets.authorize(service_file="GOOGLE_SHEETS_CREDS")
         sh_balance = gc.open("Daily Balance - Nox Pay")
         wks_IUGU_subacc = sh_balance.worksheet_by_title("IUGU Subcontas")
         wks_jaci = sh_balance.worksheet_by_title("jaci")  # Adicionado para a função get_balances
