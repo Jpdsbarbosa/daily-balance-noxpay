@@ -1,381 +1,194 @@
-import paramiko
-import json
-from time import sleep
-from datetime import datetime
-import pygsheets
-import os
-import pytz
 import psycopg2
+import time
+import pygsheets
+import pandas as pd
+from datetime import datetime
+import os
+import json
+from pathlib import Path
 
-# Configurações do banco de dados PostgreSQL
-DB_HOST = os.getenv('DB_HOST')
-DB_PORT = int(os.getenv('DB_PORT', "5432"))
-DB_NAME = os.getenv('DB_NAME')
-DB_USER = os.getenv('DB_USER')
-DB_PASS = os.getenv('DB_PASS')
+############# CONFIGURAÇÃO DO GOOGLE SHEETS #############
 
-def validate_credentials_file():
-    """Valida se o arquivo de credenciais existe e é válido"""
-    creds_file = os.getenv('GOOGLE_SHEETS_CREDS', 'controles.json')
-    
-    if not os.path.exists(creds_file):
-        print(f"ERRO: Arquivo de credenciais não encontrado: {creds_file}")
-        return False
-    
+try:
+    print("Conectando ao Google Sheets...")
+    gc = pygsheets.authorize(service_file=os.getenv('GOOGLE_SHEETS_CREDS', 'controles.json'))
+    sh = gc.open('Daily Balance - Nox Pay')
+
+    wks_JACI = sh.worksheet_by_title("DATABASE JACI")
+    print("✓ Conectado à aba DATABASE JACI")
+
+    wks_backtxs = sh.worksheet_by_title("Backoffice Ajustes")
+    print("✓ Conectado à aba Backoffice Ajustes")
+
+    wks_balances = sh.worksheet_by_title("jaci")
+    print("✓ Conectado à aba jaci")
+
+    print("Conexão com Google Sheets estabelecida com sucesso!")
+except Exception as e:
+    print(f"Erro ao conectar ao Google Sheets: {e}")
+    raise
+
+############# FUNÇÕES AUXILIARES #############
+
+def get_last_row(worksheet):
     try:
-        with open(creds_file, 'r') as f:
-            content = f.read().strip()
-            if not content:
-                print(f"ERRO: Arquivo de credenciais está vazio: {creds_file}")
-                return False
-            
-            # Tenta fazer parse do JSON
-            json.loads(content)
-            print(f"✓ Arquivo de credenciais válido: {creds_file}")
-            return True
-            
-    except json.JSONDecodeError as e:
-        print(f"ERRO: Arquivo de credenciais com formato JSON inválido: {e}")
-        return False
+        last_row = len(worksheet.get_col(9, include_tailing_empty=False)) + 1
+        print(f"Última linha encontrada em {worksheet.title}: {last_row}")
+        return last_row
     except Exception as e:
-        print(f"ERRO: Não foi possível ler o arquivo de credenciais: {e}")
-        return False
+        print(f"Erro ao obter última linha: {e}")
+        return 1
 
-def connect_database():
-    """Conecta ao banco de dados PostgreSQL"""
+############# FUNÇÕES DE CONSULTA AO BANCO #############
+
+def get_balances(cursor):
     try:
-        print("Conectando ao banco de dados PostgreSQL...")
-        connection = psycopg2.connect(
-            host=DB_HOST,
-            port=DB_PORT,
-            database=DB_NAME,
-            user=DB_USER,
-            password=DB_PASS
-        )
-        print("Conexão com banco de dados estabelecida com sucesso.")
-        return connection
-    except Exception as e:
-        print(f"Erro ao conectar com o banco de dados: {e}")
-        return None
-
-def connect_google_sheets():
-    """Conecta ao Google Sheets com validação de credenciais"""
-    try:
-        # Valida o arquivo de credenciais primeiro
-        if not validate_credentials_file():
-            return None, None, None
-        
-        print("Conectando ao Google Sheets...")
-        creds_file = os.getenv('GOOGLE_SHEETS_CREDS', 'controles.json')
-        gc = pygsheets.authorize(service_file=creds_file)
-        
-        sh_balance = gc.open("Daily Balance - Nox Pay")
-        wks_IUGU_subacc = sh_balance.worksheet_by_title("IUGU Subcontas")
-        wks_jaci = sh_balance.worksheet_by_title("jaci")
-        
-        print("✓ Conexão com Google Sheets estabelecida com sucesso!")
-        return gc, wks_IUGU_subacc, wks_jaci
-        
-    except Exception as e:
-        print(f"Erro ao conectar com Google Sheets: {e}")
-        import traceback
-        print(traceback.format_exc())
-        return None, None, None
-
-def get_snapshot_transfeera(cursor, sheet):
-    """Obtém o snapshot mais recente da conta Transfeera"""
-    try:
-        cursor.execute("""
-            SELECT  
-                DATE_TRUNC('minute', date_time - INTERVAL '3 hours') AS date_time,
-                account_bank_text,
-                balance AS min_balance
-            FROM public.core_bankbalance
-            WHERE account_bank_text = 'transfeera'
-            ORDER BY date_time DESC
-            LIMIT 1;
-        """)
-        result = cursor.fetchone()
-        if result:
-            # Usando update_value() ao invés de update_acell()
-            sheet.update_value("E3", str(result[2]))  # balance
-            sheet.update_value("B1", str(result[0]))  # date_time na célula B1
-            print(f"Snapshot Transfeera atualizado: Balance={result[2]}, DateTime={result[0]}")
-        else:
-            print("Nenhum dado encontrado para Transfeera")
-    except Exception as e:
-        print(f"Erro ao obter snapshot Transfeera: {e}")
-
-def get_snapshot_sqala(cursor, sheet):
-    """Obtém o snapshot mais recente da conta Sqala"""
-    try:
-        cursor.execute("""
-            SELECT  
-                DATE_TRUNC('minute', date_time - INTERVAL '3 hours') AS date_time,
-                account_bank_text,
-                balance AS min_balance
-            FROM public.core_bankbalance
-            WHERE account_bank_text = 'sqala'
-            ORDER BY date_time DESC
-            LIMIT 1;
-        """)
-        result = cursor.fetchone()
-        if result:
-            # Usando update_value() ao invés de update_acell()
-            sheet.update_value("F3", str(result[2]))  # balance
-            print(f"Snapshot Sqala atualizado: Balance={result[2]}, DateTime={result[0]}")
-        else:
-            print("Nenhum dado encontrado para Sqala")
-    except Exception as e:
-        print(f"Erro ao obter snapshot Sqala: {e}")
-
-def convert_to_numeric(value):
-    """Converte um valor para numérico, tratando casos especiais"""
-    if value is None or value == '' or value == 'None':
-        return 0
-    
-    try:
-        # Remove espaços e converte para string primeiro
-        str_value = str(value).strip()
-        
-        # Se estiver vazio após strip, retorna 0
-        if not str_value:
-            return 0
-            
-        # Tenta converter para float primeiro, depois para int se não há decimais
-        float_value = float(str_value)
-        
-        # Se é um número inteiro, retorna como int
-        if float_value.is_integer():
-            return int(float_value)
-        else:
-            return float_value
-            
-    except (ValueError, TypeError):
-        print(f"Aviso: Não foi possível converter '{value}' para numérico. Usando 0.")
-        return 0
-
-def get_balances(cursor, jaci_sheet):
-    """Obtém os balances dos merchants e atualiza a página jaci"""
-    try:
-        cursor.execute("""
-            SELECT
-                id AS id,
-                min(balance_decimal) AS "MIN(balance_decimal)"
-            FROM public.core_merchant
-            GROUP BY id
-            ORDER BY id ASC
-            LIMIT 1000
-        """)
-        results = cursor.fetchall()
-        
-        if results:
-            # Prepara os dados para atualização em lote
-            ids = []
-            balances = []
-            
-            for result in results:
-                # Converte id para string
-                ids.append(str(result[0]))
-                
-                # Converte balance para numérico tratando casos especiais
-                numeric_balance = convert_to_numeric(result[1])
-                balances.append(numeric_balance)
-            
-            # Limpa as colunas A e B primeiro (opcional, para garantir dados limpos)
-            print("Limpando dados anteriores da página jaci...")
-            jaci_sheet.update_values('A:A', [['']] * 1000)  # Limpa coluna A
-            jaci_sheet.update_values('B:B', [['']] * 1000)  # Limpa coluna B
-            
-            # Atualiza coluna A com os IDs
-            print("Atualizando coluna A com IDs...")
-            ids_range = f'A1:A{len(ids)}'
-            jaci_sheet.update_values(ids_range, [[id_val] for id_val in ids])
-            
-            # Atualiza coluna B com os balances (usando valores numéricos)
-            print("Atualizando coluna B com balances...")
-            balances_range = f'B1:B{len(balances)}'
-            jaci_sheet.update_values(balances_range, [[balance] for balance in balances])
-            
-            print(f"Balances atualizados na página jaci: {len(results)} registros processados")
-            
-        else:
-            print("Nenhum dado encontrado para balances")
-            
-    except Exception as e:
-        print(f"Erro ao obter balances: {e}")
-        import traceback
-        print(traceback.format_exc())
-
-def update_saldo_atual(cursor, jaci_sheet):
-    """Atualiza a coluna 'saldo_atual' na aba jaci com tratamento de tipos"""
-    try:
-        # Query para obter os saldos atuais
-        cursor.execute("""
-            SELECT
-                id AS merchant_id,
-                balance_decimal AS saldo_atual
-            FROM public.core_merchant
-            ORDER BY id ASC
-            LIMIT 1000
-        """)
-        results = cursor.fetchall()
-        
-        if results:
-            print(f"Obtidos {len(results)} saldos para atualizar...")
-            
-            # Prepara os dados para atualização
-            saldos = []
-            
-            for result in results:
-                # Converte saldo para numérico tratando casos especiais
-                saldo_numeric = convert_to_numeric(result[1])
-                saldos.append(saldo_numeric)
-            
-            # Atualiza a coluna C (ou outra coluna conforme sua planilha) com os saldos
-            print("Atualizando coluna 'saldo_atual'...")
-            saldos_range = f'C1:C{len(saldos)}'  # Assumindo que saldo_atual está na coluna C
-            jaci_sheet.update_values(saldos_range, [[saldo] for saldo in saldos])
-            
-            print(f"✓ Coluna 'saldo_atual' atualizada com {len(results)} registros")
-            
-        else:
-            print("Nenhum saldo encontrado para atualizar")
-            
-    except Exception as e:
-        print(f"Erro ao atualizar saldo_atual: {e}")
-        import traceback
-        print(traceback.format_exc())
-
-def check_all_accounts():
-    """Função principal para verificar todas as contas"""
-    db_connection = None
-    cursor = None
-    
-    try:
-        # Conecta ao banco de dados
-        db_connection = connect_database()
-        if not db_connection:
-            print("Falha na conexão com o banco de dados")
-            return False
-        
-        cursor = db_connection.cursor()
-        
-        # Conecta ao Google Sheets com validação
-        gc, wks_IUGU_subacc, wks_jaci = connect_google_sheets()
-        if not gc or not wks_IUGU_subacc or not wks_jaci:
-            print("Falha na conexão com Google Sheets")
-            return False
-        
-        # Executa as funções de snapshot
-        print("Atualizando snapshots das contas...")
-        get_snapshot_transfeera(cursor, wks_IUGU_subacc)
-        get_snapshot_sqala(cursor, wks_IUGU_subacc)
-        
-        # Executa a função de balances
-        print("Atualizando balances na página jaci...")
-        get_balances(cursor, wks_jaci)
-        
-        # Atualiza a coluna saldo_atual
-        print("Atualizando coluna 'saldo_atual' na página jaci...")
-        update_saldo_atual(cursor, wks_jaci)
-        
-        print("Todas as atualizações concluídas com sucesso!")
-        return True
-        
-    except Exception as e:
-        print(f"Erro durante verificação das contas: {e}")
-        import traceback
-        print(traceback.format_exc())
-        return False
-    finally:
-        # Fecha as conexões
-        if cursor:
-            cursor.close()
-        if db_connection:
-            db_connection.close()
-            print("Conexão com banco de dados fechada.")
-
-def check_environment_variables():
-    """Verifica se todas as variáveis de ambiente necessárias estão definidas"""
-    required_vars = ['DB_HOST', 'DB_NAME', 'DB_USER', 'DB_PASS']
-    optional_vars = ['DB_PORT', 'GOOGLE_SHEETS_CREDS']
-    
-    print("Verificando variáveis de ambiente...")
-    
-    missing_vars = []
-    for var in required_vars:
-        if not os.getenv(var):
-            missing_vars.append(var)
-        else:
-            print(f"✓ {var}: Definida")
-    
-    for var in optional_vars:
-        value = os.getenv(var)
-        if value:
-            print(f"✓ {var}: {value}")
-        else:
-            print(f"⚠️ {var}: Não definida (usando padrão)")
-    
-    if missing_vars:
-        print(f"❌ ERRO: Variáveis de ambiente obrigatórias não definidas: {missing_vars}")
-        return False
-    
-    return True
-
-def main():
-    print("Iniciando Daily Balance NOX Pay...")
-    
-    # Verifica variáveis de ambiente
-    if not check_environment_variables():
-        print("❌ Falha na verificação das variáveis de ambiente. Encerrando...")
         return
-    
-    print("\nIniciando loop principal do Daily Balance...")
-    consecutive_failures = 0
-    max_consecutive_failures = 5
-    
-    while True:
+    except Exception as e:
+        print(f"Erro ao obter saldos das contas: {e}")
+        return
+
+def get_payments(cursor):
+    try:
+        query = """
+        SELECT DISTINCT
+            DATE_TRUNC('day', cp.created_at_date AT TIME ZONE 'America/Sao_Paulo') AS data, 
+            cm.name_text AS merchant, 
+            cp.provider_text AS provider, 
+            cp.method_text AS meth, 
+            COUNT(*) AS quantidade, 
+            SUM(cp.amount_decimal) AS volume
+        FROM core_payment cp 
+        JOIN core_merchant cm ON cm.id = cp.merchant_id
+        WHERE cp.status_text = 'PAID' 
+        AND cp.created_at_date >= (DATE_TRUNC('day', NOW() AT TIME ZONE 'America/Sao_Paulo') AT TIME ZONE 'America/Sao_Paulo' AT TIME ZONE 'GMT')
+        GROUP BY data, merchant, cm.name_text, cp.provider_text, cp.method_text
+        ORDER BY data DESC;
+        """
+        print("Executando query de pagamentos do dia...")
+        cursor.execute(query)
+        results = cursor.fetchall()
+        df = pd.DataFrame(results, columns=["data", "merchant", "provider", "meth", "quantidade", "volume"])
+        if not df.empty:
+            df = df.drop_duplicates()
+            print(f"✓ Query de pagamentos retornou {len(df)} registros do dia")
+        return df
+    except Exception as e:
+        print(f"Erro ao obter pagamentos: {e}")
+        return pd.DataFrame()
+
+def get_backtransactions(cursor):
+    try:
+        query = """
+        SELECT DISTINCT
+            (SELECT cm2.name_text FROM core_merchant cm2 WHERE id = merchant_id) AS merchant,
+            description_text AS descricao,
+            SUM(amount_decimal) AS valor_total,
+            DATE_TRUNC('minute', created_at_date AT TIME ZONE 'America/Sao_Paulo') AS data_criacao,
+            MAX(created_at_date) as ultima_atualizacao
+        FROM public.core_backofficetrasactions
+        WHERE created_at_date >= (DATE_TRUNC('day', NOW() AT TIME ZONE 'America/Sao_Paulo') AT TIME ZONE 'America/Sao_Paulo' AT TIME ZONE 'GMT')
+        GROUP BY DATE_TRUNC('minute', created_at_date AT TIME ZONE 'America/Sao_Paulo'), merchant_id, descricao
+        ORDER BY ultima_atualizacao ASC
+        LIMIT 100;
+        """
+        print("Executando query de backoffice do dia...")
+        cursor.execute(query)
+        results = cursor.fetchall()
+        df = pd.DataFrame(results, columns=["merchant", "descricao", "valor_total", "data_criacao", "ultima_atualizacao"])
+        if not df.empty:
+            df['data_criacao'] = df['data_criacao'].dt.strftime('%Y-%m-%d %H:%M')
+            df = df.drop(columns=["ultima_atualizacao"])
+            df = df.drop_duplicates()
+            print(f"✓ Query de backoffice retornou {len(df)} registros do dia")
+        return df
+    except Exception as e:
+        print(f"Erro ao obter transações do backoffice: {e}")
+        return pd.DataFrame()
+
+def get_jaci_atual_from_postgres(cursor):
+    try:
+        query = """
+        SELECT
+            name_text AS merchant_name,
+            balance_decimal AS jaci_atual
+        FROM public.core_merchant
+        ORDER BY name_text;
+        """
+        cursor.execute(query)
+        results = cursor.fetchall()
+        df = pd.DataFrame(results, columns=["merchant_name", "jaci_atual"])
+        return df
+    except Exception as e:
+        print(f"Erro ao buscar saldos atuais (Jaci Atual): {e}")
+        return pd.DataFrame()
+
+############# LOOP PRINCIPAL #############
+
+print("\nIniciando loop principal...")
+while True:
+    try:
+        current_time = datetime.now()
+        print(f"\n{'='*50}")
+        print(f"Nova atualização iniciada em: {current_time}")
+        print(f"{'='*50}")
+
+        if current_time.hour == 0 and current_time.minute == 0:
+            print("Meia-noite detectada, aguardando 1 minuto...")
+            time.sleep(60)
+
+        print("\nConectando ao banco de dados...")
+        with psycopg2.connect(
+            host=os.getenv('DB_HOST'),
+            user=os.getenv('DB_USER'),
+            password=os.getenv('DB_PASS'),
+            database=os.getenv('DB_NAME'),
+            port=int(os.getenv('DB_PORT', "5432"))
+        ) as conn:
+            print("✓ Conexão estabelecida com sucesso")
+
+            with conn.cursor() as cursor:
+                print("\nAtualizando saldos...")
+                get_balances(cursor)
+
+                print("\nAtualizando pagamentos...")
+                df_payments = get_payments(cursor)
+                if not df_payments.empty:
+                    last_row_JACI = get_last_row(wks_JACI)
+                    wks_JACI.set_dataframe(df_payments, (last_row_JACI, 1), encoding="utf-8", copy_head=False)
+                    print("✓ Pagamentos atualizados com sucesso na aba 'DATABASE JACI'")
+
+                print("\nAtualizando transações do backoffice...")
+                df_backtxs = get_backtransactions(cursor)
+                if not df_backtxs.empty:
+                    last_row_backtxs = get_last_row(wks_backtxs)
+                    wks_backtxs.set_dataframe(df_backtxs, (last_row_backtxs, 1), encoding="utf-8", copy_head=False)
+                    print("✓ Transações do backoffice atualizadas com sucesso na aba 'Backoffice Ajustes'")
+
+                print("\nAtualizando coluna 'saldo_atual' na aba 'jaci'...")
+                df_jaci_atual = get_jaci_atual_from_postgres(cursor)
+                if not df_jaci_atual.empty:
+                    sheet_data = wks_balances.get_all_records()
+                    df_sheet = pd.DataFrame(sheet_data)
+
+                    df_merge = pd.merge(df_sheet, df_jaci_atual, how='left', left_on='Merchant', right_on='merchant_name')
+                    values_to_update = df_merge['jaci_atual'].fillna("").round(2).astype(str).tolist()
+                    wks_balances.update_col(2, ['saldo_atual'] + values_to_update)
+                    print("✓ Coluna 'saldo_atual' atualizada com sucesso na aba 'jaci'.")
+                else:
+                    print("⚠️ Nenhum dado retornado do PostgreSQL para 'saldo_atual'")
+
+    except Exception as e:
+        print(f"\nERRO CRÍTICO: {e}")
         try:
-            current_time = datetime.now(pytz.UTC).astimezone(pytz.timezone('America/Sao_Paulo'))
-            print(f"\n{'='*50}")
-            print(f"Atualização em: {current_time}")
-            print(f"{'='*50}")
+            cursor.close()
+            conn.close()
+        except:
+            pass
+        print("Tentando reiniciar o loop em 60 segundos...")
+        time.sleep(60)
+        continue
 
-            # Executa a atualização das contas
-            print("Iniciando atualização dos snapshots...")
-            success = check_all_accounts()
-            
-            if success:
-                consecutive_failures = 0
-                print(f"\n✓ Atualização concluída com sucesso em: {datetime.now(pytz.UTC).astimezone(pytz.timezone('America/Sao_Paulo'))}")
-            else:
-                consecutive_failures += 1
-                print(f"\n❌ Falha na atualização #{consecutive_failures}")
-                
-                if consecutive_failures >= max_consecutive_failures:
-                    print(f"❌ ERRO CRÍTICO: {max_consecutive_failures} falhas consecutivas. Encerrando aplicação...")
-                    break
-
-        except KeyboardInterrupt:
-            print("\n⚠️ Interrupção pelo usuário. Encerrando...")
-            break
-        except Exception as e:
-            consecutive_failures += 1
-            print(f"\n❌ ERRO CRÍTICO #{consecutive_failures}: {e}")
-            print("Tentando reiniciar o loop em 60 segundos...")
-            import traceback
-            print(traceback.format_exc())
-            
-            if consecutive_failures >= max_consecutive_failures:
-                print(f"❌ ERRO CRÍTICO: {max_consecutive_failures} falhas consecutivas. Encerrando aplicação...")
-                break
-            
-            sleep(60)
-            continue
-
-        print("Aguardando 60 segundos para próxima atualização...")
-        sleep(60)  # Executa a cada 1 minuto
-
-if __name__ == "__main__":
-    main()
+    print(f"\nAtualização concluída em: {datetime.now()}")
+    print("Aguardando 60 segundos para próxima atualização...")
+    time.sleep(60)
