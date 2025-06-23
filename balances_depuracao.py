@@ -160,7 +160,7 @@ while True:
 
         if current_time.hour == 0 and current_time.minute == 0:
             print("Meia-noite detectada, aguardando 1 minuto...")
-            time.sleep(60)
+            time.sleep(300)
 
         print("\nConectando ao banco de dados...")
         with psycopg2.connect(
@@ -239,10 +239,10 @@ while True:
             conn.close()
         except:
             pass
-        print("Tentando reiniciar o loop em 60 segundos...")
-        time.sleep(60)
+        print("Tentando reiniciar o loop em 300 segundos...")
+        time.sleep(300)
         continue
 
     print(f"\nAtualização concluída em: {datetime.now()}")
-    print("Aguardando 60 segundos para próxima atualização...")
-    time.sleep(60)
+    print("Aguardando 300 segundos para próxima atualização...")
+    time.sleep(300)
