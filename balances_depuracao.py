@@ -6,6 +6,7 @@ from datetime import datetime
 import os
 import json
 from pathlib import Path
+import numpy as np
 
 ############# CONFIGURAÇÃO DO GOOGLE SHEETS #############
 
@@ -38,6 +39,26 @@ def get_last_row(worksheet):
     except Exception as e:
         print(f"Erro ao obter última linha: {e}")
         return 1
+
+def convert_to_numeric(value):
+    """Converte um valor para numérico, tratando casos especiais"""
+    if value is None or pd.isna(value):
+        return 0.0
+    
+    try:
+        # Remove espaços e converte para string primeiro
+        str_value = str(value).strip()
+        
+        # Se estiver vazio após strip, retorna 0
+        if not str_value or str_value.lower() in ['', 'none', 'nan']:
+            return 0.0
+            
+        # Tenta converter para float
+        return float(str_value)
+            
+    except (ValueError, TypeError):
+        print(f"Aviso: Não foi possível converter '{value}' para numérico. Usando 0.0.")
+        return 0.0
 
 ############# FUNÇÕES DE CONSULTA AO BANCO #############
 
@@ -118,6 +139,10 @@ def get_jaci_atual_from_postgres(cursor):
         cursor.execute(query)
         results = cursor.fetchall()
         df = pd.DataFrame(results, columns=["merchant_name", "jaci_atual"])
+        
+        # Converte a coluna jaci_atual para numérico tratando casos especiais
+        df['jaci_atual'] = df['jaci_atual'].apply(convert_to_numeric)
+        
         return df
     except Exception as e:
         print(f"Erro ao buscar saldos atuais (Jaci Atual): {e}")
@@ -168,18 +193,47 @@ while True:
                 print("\nAtualizando coluna 'saldo_atual' na aba 'jaci'...")
                 df_jaci_atual = get_jaci_atual_from_postgres(cursor)
                 if not df_jaci_atual.empty:
-                    sheet_data = wks_balances.get_all_records()
-                    df_sheet = pd.DataFrame(sheet_data)
+                    try:
+                        sheet_data = wks_balances.get_all_records()
+                        df_sheet = pd.DataFrame(sheet_data)
+                        
+                        print(f"Dados da planilha: {len(df_sheet)} linhas")
+                        print(f"Dados do PostgreSQL: {len(df_jaci_atual)} linhas")
 
-                    df_merge = pd.merge(df_sheet, df_jaci_atual, how='left', left_on='Merchant', right_on='merchant_name')
-                    values_to_update = df_merge['jaci_atual'].fillna("").round(2).astype(str).tolist()
-                    wks_balances.update_col(2, ['saldo_atual'] + values_to_update)
-                    print("✓ Coluna 'saldo_atual' atualizada com sucesso na aba 'jaci'.")
+                        # Faz o merge dos dados
+                        df_merge = pd.merge(df_sheet, df_jaci_atual, how='left', left_on='Merchant', right_on='merchant_name')
+                        
+                        # Prepara valores para atualização - CORRIGIDO
+                        values_to_update = []
+                        
+                        for value in df_merge['jaci_atual']:
+                            if pd.isna(value):
+                                numeric_value = 0.0
+                            else:
+                                numeric_value = convert_to_numeric(value)
+                            
+                            # Arredonda para 2 casas decimais
+                            rounded_value = round(numeric_value, 2)
+                            values_to_update.append(rounded_value)
+                        
+                        print(f"Valores preparados para atualização: {len(values_to_update)} registros")
+                        print(f"Primeiros 5 valores: {values_to_update[:5]}")
+                        
+                        # Atualiza a coluna (coluna 2 = B, assumindo que saldo_atual está na coluna B)
+                        wks_balances.update_col(2, ['saldo_atual'] + values_to_update)
+                        print("✓ Coluna 'saldo_atual' atualizada com sucesso na aba 'jaci'.")
+                        
+                    except Exception as e:
+                        print(f"Erro específico na atualização da coluna saldo_atual: {e}")
+                        import traceback
+                        print(traceback.format_exc())
                 else:
                     print("⚠️ Nenhum dado retornado do PostgreSQL para 'saldo_atual'")
 
     except Exception as e:
         print(f"\nERRO CRÍTICO: {e}")
+        import traceback
+        print(traceback.format_exc())
         try:
             cursor.close()
             conn.close()
