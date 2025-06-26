@@ -131,6 +131,7 @@ def get_jaci_atual_from_postgres(cursor):
     try:
         query = """
         SELECT
+            id AS merchant_id,
             name_text AS merchant_name,
             balance_decimal AS jaci_atual
         FROM public.core_merchant
@@ -138,10 +139,17 @@ def get_jaci_atual_from_postgres(cursor):
         """
         cursor.execute(query)
         results = cursor.fetchall()
-        df = pd.DataFrame(results, columns=["merchant_name", "jaci_atual"])
+        df = pd.DataFrame(results, columns=["merchant_id", "merchant_name", "jaci_atual"])
         
         # Converte a coluna jaci_atual para numérico tratando casos especiais
         df['jaci_atual'] = df['jaci_atual'].apply(convert_to_numeric)
+        
+        print(f"Dados obtidos do PostgreSQL:")
+        print(f"Total de merchants: {len(df)}")
+        if not df.empty:
+            print("Primeiros 5 registros:")
+            for idx, row in df.head().iterrows():
+                print(f"  ID: {row['merchant_id']}, Nome: {row['merchant_name']}, Saldo: {row['jaci_atual']}")
         
         return df
     except Exception as e:
@@ -190,67 +198,48 @@ while True:
                     wks_backtxs.set_dataframe(df_backtxs, (last_row_backtxs, 1), encoding="utf-8", copy_head=False)
                     print("✓ Transações do backoffice atualizadas com sucesso na aba 'Backoffice Ajustes'")
 
-                print("\nAtualizando coluna 'saldo_atual' na aba 'jaci'...")
+                print("\nAtualizando dados na aba 'jaci'...")
                 df_jaci_atual = get_jaci_atual_from_postgres(cursor)
                 if not df_jaci_atual.empty:
                     try:
-                        # Pega todos os dados da planilha
-                        sheet_data = wks_balances.get_all_records()
-                        df_sheet = pd.DataFrame(sheet_data)
-                        
-                        print(f"Dados da planilha: {len(df_sheet)} linhas")
                         print(f"Dados do PostgreSQL: {len(df_jaci_atual)} linhas")
+                        print(f"Primeiros 5 registros:")
+                        print(df_jaci_atual.head())
                         
-                        # Debug: mostra os tipos de dados
-                        print(f"Tipo da coluna 'Merchant' na planilha: {df_sheet['Merchant'].dtype}")
-                        print(f"Tipo da coluna 'merchant_name' no PostgreSQL: {df_jaci_atual['merchant_name'].dtype}")
-                        print(f"Primeiros 5 valores da planilha: {df_sheet['Merchant'].head().tolist()}")
-                        print(f"Primeiros 5 valores do PostgreSQL: {df_jaci_atual['merchant_name'].head().tolist()}")
+                        # Prepara os dados para atualização completa da planilha
+                        # Cria o DataFrame com as 3 colunas
+                        df_to_update = df_jaci_atual[['merchant_name', 'merchant_id', 'jaci_atual']].copy()
+                        df_to_update.columns = ['Merchant', 'Merchant_id', 'saldo_atual']
                         
-                        # Converte ambas as colunas para string para garantir compatibilidade
-                        df_sheet['Merchant'] = df_sheet['Merchant'].astype(str)
-                        df_jaci_atual['merchant_name'] = df_jaci_atual['merchant_name'].astype(str)
+                        # Arredonda saldo_atual para 2 casas decimais
+                        df_to_update['saldo_atual'] = df_to_update['saldo_atual'].round(2)
                         
-                        # Faz o merge dos dados
-                        df_merge = pd.merge(df_sheet, df_jaci_atual, how='left', left_on='Merchant', right_on='merchant_name')
+                        print(f"Dados preparados para atualização: {len(df_to_update)} registros")
+                        print("Estrutura dos dados:")
+                        print(df_to_update.head())
                         
-                        # Prepara valores para atualização
-                        values_to_update = []
+                        # Limpa a planilha e adiciona os cabeçalhos + dados
+                        wks_balances.clear()
                         
-                        for value in df_merge['jaci_atual']:
-                            if pd.isna(value):
-                                numeric_value = 0.0
-                            else:
-                                numeric_value = convert_to_numeric(value)
-                            
-                            # Arredonda para 2 casas decimais
-                            rounded_value = round(numeric_value, 2)
-                            values_to_update.append(rounded_value)
+                        # Adiciona cabeçalhos
+                        headers = ['Merchant', 'saldo_atual', 'Merchant_id']
+                        wks_balances.update_row(1, headers)
                         
-                        print(f"Valores preparados para atualização: {len(values_to_update)} registros")
-                        print(f"Primeiros 5 valores: {values_to_update[:5]}")
+                        # Reorganiza as colunas para a ordem correta: Merchant, saldo_atual, Merchant_id
+                        df_final = df_to_update[['Merchant', 'saldo_atual', 'Merchant_id']]
                         
-                        # CORREÇÃO: Atualiza apenas os valores, começando da linha 2 (após o cabeçalho)
-                        if values_to_update:
-                            # Atualiza apenas os valores, começando da linha 2
-                            start_row = 2  # Linha 2 para pular o cabeçalho
-                            end_row = start_row + len(values_to_update) - 1
-                            
-                            # Atualiza o range específico na coluna B
-                            cell_range = f'B{start_row}:B{end_row}'
-                            
-                            # Converte para formato de célula (cada valor em uma lista)
-                            values_formatted = [[value] for value in values_to_update]
-                            
-                            wks_balances.update_values(cell_range, values_formatted)
-                            print(f"✓ Coluna 'saldo_atual' atualizada com sucesso na aba 'jaci' (linhas {start_row} a {end_row}).")
+                        # Adiciona os dados a partir da linha 2
+                        wks_balances.set_dataframe(df_final, (2, 1), copy_head=False, encoding="utf-8")
+                        
+                        print(f"✓ Aba 'jaci' atualizada com sucesso com {len(df_final)} registros.")
+                        print("✓ Estrutura: Coluna A=Merchant, Coluna B=saldo_atual, Coluna C=Merchant_id")
                             
                     except Exception as e:
-                        print(f"Erro específico na atualização da coluna saldo_atual: {e}")
+                        print(f"Erro específico na atualização da aba jaci: {e}")
                         import traceback
                         print(traceback.format_exc())
                 else:
-                    print("⚠️ Nenhum dado retornado do PostgreSQL para 'saldo_atual'")
+                    print("⚠️ Nenhum dado retornado do PostgreSQL para a aba 'jaci'")
 
     except Exception as e:
         print(f"\nERRO CRÍTICO: {e}")
