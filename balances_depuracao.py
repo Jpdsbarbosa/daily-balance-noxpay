@@ -221,7 +221,6 @@ while True:
                         print(f"Primeiros 5 valores: {values_to_update[:5]}")
                         
                         # CORREÇÃO: Atualiza apenas os valores, começando da linha 2 (após o cabeçalho)
-                        # Assumindo que saldo_atual está na coluna B (índice 2)
                         if values_to_update:
                             # Atualiza apenas os valores, começando da linha 2
                             start_row = 2  # Linha 2 para pular o cabeçalho
@@ -240,8 +239,8 @@ while True:
                         print(f"Erro específico na atualização da coluna saldo_atual: {e}")
                         import traceback
                         print(traceback.format_exc())
-else:
-    print("⚠️ Nenhum dado retornado do PostgreSQL para 'saldo_atual'")
+                else:
+                    print("⚠️ Nenhum dado retornado do PostgreSQL para 'saldo_atual'")
 
     except Exception as e:
         print(f"\nERRO CRÍTICO: {e}")
