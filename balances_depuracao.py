@@ -200,7 +200,17 @@ while True:
                         
                         print(f"Dados da planilha: {len(df_sheet)} linhas")
                         print(f"Dados do PostgreSQL: {len(df_jaci_atual)} linhas")
-                
+                        
+                        # Debug: mostra os tipos de dados
+                        print(f"Tipo da coluna 'Merchant' na planilha: {df_sheet['Merchant'].dtype}")
+                        print(f"Tipo da coluna 'merchant_name' no PostgreSQL: {df_jaci_atual['merchant_name'].dtype}")
+                        print(f"Primeiros 5 valores da planilha: {df_sheet['Merchant'].head().tolist()}")
+                        print(f"Primeiros 5 valores do PostgreSQL: {df_jaci_atual['merchant_name'].head().tolist()}")
+                        
+                        # Converte ambas as colunas para string para garantir compatibilidade
+                        df_sheet['Merchant'] = df_sheet['Merchant'].astype(str)
+                        df_jaci_atual['merchant_name'] = df_jaci_atual['merchant_name'].astype(str)
+                        
                         # Faz o merge dos dados
                         df_merge = pd.merge(df_sheet, df_jaci_atual, how='left', left_on='Merchant', right_on='merchant_name')
                         
