@@ -123,7 +123,7 @@ def get_snapshot_sqala(cursor, sheet):
         print(f"❌ Erro ao obter snapshot Sqala: {e}")
         import traceback
         print(traceback.format_exc())
-
+'''
 def get_balances(cursor, jaci_sheet):
     """Obtém os balances dos merchants e atualiza a página jaci"""
     try:
@@ -177,7 +177,7 @@ def get_balances(cursor, jaci_sheet):
         print(f"❌ Erro ao obter balances: {e}")
         import traceback
         print(traceback.format_exc())
-
+    '''
 def check_all_accounts():
     """Função principal para verificar todas as contas"""
     db_connection = None
@@ -208,8 +208,8 @@ def check_all_accounts():
         get_snapshot_sqala(cursor, wks_IUGU_subacc)
         
         # Executa a função de balances
-        print("\n--- Atualizando balances na página jaci ---")
-        get_balances(cursor, wks_jaci)
+        #print("\n--- Atualizando balances na página jaci ---")
+        #get_balances(cursor, wks_jaci)
         
         print("\n✅ Todas as atualizações concluídas!")
         return True
