@@ -194,16 +194,17 @@ while True:
                 df_jaci_atual = get_jaci_atual_from_postgres(cursor)
                 if not df_jaci_atual.empty:
                     try:
+                        # Pega todos os dados da planilha
                         sheet_data = wks_balances.get_all_records()
                         df_sheet = pd.DataFrame(sheet_data)
                         
                         print(f"Dados da planilha: {len(df_sheet)} linhas")
                         print(f"Dados do PostgreSQL: {len(df_jaci_atual)} linhas")
-
+                
                         # Faz o merge dos dados
                         df_merge = pd.merge(df_sheet, df_jaci_atual, how='left', left_on='Merchant', right_on='merchant_name')
                         
-                        # Prepara valores para atualização - CORRIGIDO
+                        # Prepara valores para atualização
                         values_to_update = []
                         
                         for value in df_merge['jaci_atual']:
@@ -219,16 +220,28 @@ while True:
                         print(f"Valores preparados para atualização: {len(values_to_update)} registros")
                         print(f"Primeiros 5 valores: {values_to_update[:5]}")
                         
-                        # Atualiza a coluna (coluna 2 = B, assumindo que saldo_atual está na coluna B)
-                        wks_balances.update_col(2, ['saldo_atual'] + values_to_update)
-                        print("✓ Coluna 'saldo_atual' atualizada com sucesso na aba 'jaci'.")
-                        
+                        # CORREÇÃO: Atualiza apenas os valores, começando da linha 2 (após o cabeçalho)
+                        # Assumindo que saldo_atual está na coluna B (índice 2)
+                        if values_to_update:
+                            # Atualiza apenas os valores, começando da linha 2
+                            start_row = 2  # Linha 2 para pular o cabeçalho
+                            end_row = start_row + len(values_to_update) - 1
+                            
+                            # Atualiza o range específico na coluna B
+                            cell_range = f'B{start_row}:B{end_row}'
+                            
+                            # Converte para formato de célula (cada valor em uma lista)
+                            values_formatted = [[value] for value in values_to_update]
+                            
+                            wks_balances.update_values(cell_range, values_formatted)
+                            print(f"✓ Coluna 'saldo_atual' atualizada com sucesso na aba 'jaci' (linhas {start_row} a {end_row}).")
+                            
                     except Exception as e:
                         print(f"Erro específico na atualização da coluna saldo_atual: {e}")
                         import traceback
                         print(traceback.format_exc())
-                else:
-                    print("⚠️ Nenhum dado retornado do PostgreSQL para 'saldo_atual'")
+else:
+    print("⚠️ Nenhum dado retornado do PostgreSQL para 'saldo_atual'")
 
     except Exception as e:
         print(f"\nERRO CRÍTICO: {e}")
